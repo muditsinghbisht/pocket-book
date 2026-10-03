@@ -200,7 +200,7 @@ Remaining system design, data structures and algorithms, databases, networking, 
 
 ## Skills
 
-Project skills live in `.claude/skills/` (`content-authoring`, `case-study-sources`, `persistence-idb`, `mobile-first-ui`).
+Project skills live in `.claude/skills/` (`content-authoring`, `case-study-sources`, `persistence-idb`, `mobile-first-ui`, `commit-messages`).
 
 Plugin skills to be installed before implementation starts.
 
