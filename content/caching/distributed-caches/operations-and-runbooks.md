@@ -34,11 +34,33 @@ Suppose you will cache user sessions and profile fragments. Estimates: 80 millio
 
 Add policy: one replica per primary doubles RAM: 48 GB across the fleet. Add fragmentation and persistence headroom of about 30% on each node (the guidance is roughly 25 to 50% for Redis if forking is used): 24 GB data needs nodes with `24 / 0.7 = 34.3` GB usable, per copy. Add growth at 40% over the next year: `34.3 * 1.4 = 48` GB per copy. With a replica: about 96 GB of RAM in total. If you use nodes with 16 GB each, that is six nodes (three primaries and three replicas), or choose eight nodes with four shards for smoother balance and a smaller blast radius per node.
 
+The memory sizing walkthrough:
+
+```mermaid
+flowchart LR
+  A["80M keys x 300 B = 24 GB"] --> B["/ 0.7 headroom = 34.3 GB"]
+  B --> C["x 1.4 growth = 48 GB per copy"]
+  C --> D["x 2 with replica = 96 GB"]
+  D --> E["16 GB nodes: 6 nodes"]
+```
+
 ### 1.2 Throughput sizing
 
 Memory fit is not enough. Suppose peak is 400,000 reads per second and 40,000 writes per second, with an average 1 KB item over the wire. Network egress is `400,000 * 1 KB = 400 MB/s`, or 3.2 Gbit/s, plus replication traffic: each write is sent to the replica too, `40,000 * 1 KB = 40 MB/s` more. A 10 Gbit/s NIC handles that per cluster but not per node if the load is concentrated, so divide by the shard count and also include the imbalance factor from sharding: if the hottest shard carries 1.5 times the average, size for the hottest, not the average.
 
 CPU: suppose each node can sustain 100,000 simple operations per second at acceptable latency (an assumed measured number, not a universal one; determine yours with a load test using your real value sizes and command mix). Peak 440,000 ops per second needs `440,000 / 100,000 = 4.4`, so five primaries minimum before headroom; with a target of 60% utilisation at peak, `4.4 / 0.6 = 7.3`, so eight primaries. Notice that throughput, not memory, became the binding constraint here: eight primaries with 16 GB each hold far more than the 24 GB dataset. You size for the larger of the memory requirement and the throughput requirement.
+
+Throughput, not memory, can be the binding constraint (primaries needed):
+
+```mermaid
+xychart-beta
+  title "Primaries needed (16 GB nodes)"
+  x-axis ["By memory (48 GB per copy)", "By throughput (60% target)"]
+  y-axis "primaries" 0 --> 10
+  bar [3, 8]
+```
+
+> **Key idea:** size for the larger of the memory requirement and the throughput requirement, and for the hottest shard, not the average.
 
 ### 1.3 Failure-tolerance sizing
 
@@ -59,6 +81,16 @@ The marginal value of cache memory shrinks. For an access pattern following a Zi
 | 100%                          | 99%       |
 
 Going from 25% to 50% costs as much memory as going from 0 to 25% and buys 5 points. Whether that is worth it depends on the _miss cost_. The database load at hit ratio `h` is `(1 - h) * R` for request rate `R`. At 400,000 requests per second: 90% means 40,000 database reads per second; 95% means 20,000; 99% means 4,000. If each database read costs capacity worth X dollars, the break-even is straightforward: buy cache memory until the cost of the marginal memory equals the saved database cost. In practice the curve is estimated by simulation over production traces or by measuring hit ratio at different `maxmemory` settings on a canary. The tail of the curve is also where cache-hit improvements start hiding rare but expensive misses, so look at the latency or cost of misses, not only their count.
+
+The hit ratio curve (database reads per second at 400,000 requests per second: 40,000 at 90%, 20,000 at 95%, 4,000 at 99%):
+
+```mermaid
+xychart-beta
+  title "Hit ratio vs cache size"
+  x-axis ["5%", "10%", "25%", "50%", "100%"]
+  y-axis "hit ratio %" 60 --> 100
+  line [70, 80, 90, 95, 99]
+```
 
 ### 1.5 Be careful with averages when sizing
 
@@ -111,6 +143,21 @@ Slow command logs find expensive commands. Hot-key detection needs sampling: eit
 ### 2.9 Dashboards and alerts
 
 Two kinds of alert exist, and they should not be confused. **Symptoms** (users or the database are affected): database load above a threshold, application error rate, p99 request latency, hit ratio drop of a key class. **Causes** (a probable explanation): replica down, fragmentation ratio high, evictions rising. Page humans on symptoms and on causes that will inevitably become symptoms soon; send other causes to a dashboard or ticket. Every page should have a linked runbook. Alerts that fire daily without action train people to ignore them.
+
+What to watch:
+
+```mermaid
+mindmap
+  root((Cache health))
+    Hit ratio
+    Evictions and expirations
+    Latency p50 p99
+    Memory and fragmentation
+    Connections
+    Throughput and command mix
+    Replication lag and fork time
+    Slow log and hot keys
+```
 
 ## 3. Failure modes and runbooks
 
@@ -174,6 +221,17 @@ _Avoid:_ switching all traffic at once; flushing the production cache "to fix" a
 _Recognise:_ user reports of old data while the cache hit ratio is healthy.
 _Check:_ recent invalidation path changes, replication lag between database replicas, TTL changes, a key version mismatch between services, a race between concurrent writers.
 _Act:_ identify the affected key class; delete those keys selectively or bump their key version; repair the invalidation path; consider shorter TTLs as a safety net.
+
+Runbooks at a glance:
+
+| Failure             | Recognise                                          | First safe action                                  | Avoid                                    |
+| ------------------- | -------------------------------------------------- | -------------------------------------------------- | ---------------------------------------- |
+| Node loss           | one shard errors, hit ratio drops by its key share | confirm promotion, keep breakers and coalescing on | removing the node from the client list   |
+| Hot key             | one node hot, others idle                          | in-process cache, split or replicate the key       | adding nodes first                       |
+| Eviction storm      | evictions jump, hit ratio falls                    | stop the offending writer, add memory              | flushing                                 |
+| Latency spike       | p99 up, mean steady                                | check slow log and fork time                       | blaming the cache before the client pool |
+| Replication trouble | growing lag, repeated full syncs                   | raise backlog, fix network                         | bulk replica restarts                    |
+| Cold start          | hit ratio near zero                                | ramp traffic, pre-warm                             | switching all traffic at once            |
 
 ## 4. Safe change management
 

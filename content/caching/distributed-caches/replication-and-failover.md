@@ -28,6 +28,18 @@ There is a second reason: read scaling. Replicas can serve reads, multiplying re
 
 A third reason is the cost of rewarming. If your cold fill takes 30 minutes at the database's maximum safe refill rate, then 30 minutes of degraded performance per failure is the price of not replicating.
 
+Why replicate a cache at all (10 nodes, 500,000 reads/s, 98% hit ratio, one node lost, database reads per second):
+
+```mermaid
+xychart-beta
+  title "Database reads per second"
+  x-axis ["Normal", "One node lost, no replica", "Database capacity"]
+  y-axis "reads/s" 0 --> 65000
+  bar [10000, 59000, 25000]
+```
+
+> **Key idea:** replication in a cache is load protection, not durability. A warm replica keeps the miss burst away from the database.
+
 ## 2. Replication models
 
 Replication means that a write accepted by one node is also applied elsewhere. Variations differ in who accepts writes and when the writer is acknowledged.
@@ -41,6 +53,27 @@ One node (the primary, formerly master) accepts writes; one or more replicas rec
 In **asynchronous** replication the primary acknowledges the client as soon as it has applied the write locally, and ships it to replicas in the background. Latency is minimal, but there is a window in which an acknowledged write exists only on the primary. If the primary fails in that window, the write is lost when a replica is promoted. In **synchronous** replication the primary waits for one or more replicas to confirm before acknowledging. No acknowledged write is lost on a single failure, but every write pays a network round trip (typically hundreds of microseconds within a data center, tens to hundreds of milliseconds across regions) and a slow or dead replica can stall writes.
 
 For a cache the default is asynchronous. The data is derivable. The lost-write window loses at most a few cached values, which the next miss repopulates. However there is an important caveat: if your "cache" is also being used as a primary store for something (sessions, rate-limit counters, feature flags, job queues), the lost-write window is real data loss. Decide per use case. Some systems provide an opt-in wait-for-replicas command (Redis has `WAIT`, which blocks until a number of replicas acknowledge the preceding writes), but this narrows rather than eliminates the window, because it does not make the system fully linearizable if failover can still promote a replica that has not caught up. State that carefully when you design with it.
+
+The asynchronous lost-write window:
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant P as Primary
+  participant R as Replica
+  C->>P: SET k=v2
+  P-->>C: OK (acknowledged)
+  Note over P,R: window: v2 exists only on the primary
+  P--xR: primary fails before shipping
+  Note over R: promoted replica never saw v2
+```
+
+|                                    | Asynchronous   | Synchronous             |
+| ---------------------------------- | -------------- | ----------------------- |
+| Write latency                      | local only     | plus replica round trip |
+| Lost acknowledged write on failure | possible       | no (single failure)     |
+| Slow replica effect                | none on writes | can stall writes        |
+| Cache default                      | yes            | rarely                  |
 
 ### 2.3 Replicated pools (multi-copy writes)
 
@@ -120,6 +153,22 @@ Assume a 5 second detection timeout, a monitor agreement and election step of ab
 
 Clients can soften the 8 seconds. Using a **circuit breaker** around the cache node lets requests fail fast and go to the database (or to a degraded response) instead of waiting on a connect timeout of several seconds, which would otherwise pile up threads. Using a short client timeout (tens of milliseconds for a cache read) is crucial: a hung cache node that accepts connections but does not answer causes thread pool exhaustion in the application, which is a worse failure than a clean miss.
 
+The worked failover timeline (5 s detection, 1 s election, 1 s promotion, 1 s client refresh):
+
+```mermaid
+gantt
+  title Failover for one shard (seconds)
+  dateFormat X
+  axisFormat %s
+  section Phases
+  Detection timeout : 0, 5
+  Agreement and election : 5, 6
+  Promotion : 6, 7
+  Clients refresh : 7, 8
+```
+
+Total unavailability is about 8 seconds. On 10 shards that is 10% of keys: 50,000 reads/s of which 49,000 miss.
+
 ## 5. Split brain, quorum and fencing
 
 Suppose a network partition isolates the old primary from the monitors but not from some clients. The monitors promote a replica. Now there are two primaries, each accepting writes from the clients that reach them: **split brain**. When the partition heals, one side's writes must be discarded or merged. In an asynchronous system there is no way to merge automatically; the old primary is demoted and resynchronises from the new one, discarding its divergent writes.
@@ -127,6 +176,17 @@ Suppose a network partition isolates the old primary from the monitors but not f
 Quorum limits damage. A common safeguard is for a primary to stop accepting writes if it cannot reach a minimum number of replicas (Redis offers configuration for this: `min-replicas-to-write` and `min-replicas-max-lag`; check the documentation of your version for exact names and behaviour). An isolated primary with no reachable replicas then refuses writes after a short delay, so the divergence window is bounded by that delay. The cost is lost write availability for the isolated side, which for a cache usually means those writes just fail and the application reads from the database.
 
 For caches, a more pragmatic view applies: a few seconds of split brain loses some cached writes, and the cached values are derivable. The risky case is split brain for data you are treating as primary (locks, counters, queues). Never use a plain asynchronously replicated cache for distributed locks that protect correctness; the lock service is the wrong place to trade away mutual exclusion. This is a well-known debate in the Redis community about lock algorithms spanning multiple independent instances; for a safety-critical lock use a consensus-based system.
+
+How `min-replicas-to-write` bounds split brain:
+
+```mermaid
+flowchart TD
+  A[Partition isolates old primary] --> B[Monitors promote a replica]
+  A --> C{Old primary reaches enough replicas?}
+  C -- yes --> D[Keeps accepting writes: split brain]
+  C -- no --> E[Refuses writes after short delay]
+  E --> F[Divergence window bounded]
+```
 
 ## 6. Warm replica, cold replica, and resynchronisation cost
 
@@ -136,6 +196,20 @@ When a replica is added or reconnects, it must obtain the primary's state. There
 - **Partial sync (incremental catch-up).** If the replica was disconnected briefly, the primary can send only the writes it missed, provided it still has them in a bounded buffer (Redis calls this the replication backlog). Size the backlog to cover the longest disconnection you want to bridge. If the write rate is 20 MB/s and you want to bridge a 60 second blip, the backlog must hold `20 * 60 = 1,200` MB.
 
 A classic failure: a primary is under load, a replica falls behind or disconnects, a full sync starts, the fork and snapshot slow the primary further, other replicas also fall behind and need full syncs, and the whole group enters a resynchronisation storm. Avoid it with generous backlog sizing, with limits on the replication output buffer so a slow replica cannot consume unbounded primary memory (it will be disconnected instead), and with staggered restarts.
+
+A replica's choice on reconnect:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Connected
+  Connected --> Disconnected: link drops
+  Disconnected --> Reconnecting: link returns
+  Reconnecting --> Connected: backlog covers the gap (partial sync)
+  Reconnecting --> FullSync: backlog overrun
+  FullSync --> Connected: snapshot loaded
+```
+
+Sizing: a 20 MB/s write rate bridging a 60 s blip needs a 1,200 MB backlog; a 40 GB full sync over 1 Gbit/s takes about 320 s.
 
 ## 7. Replication versus other availability techniques
 
@@ -156,6 +230,18 @@ Suppose your database can handle 25,000 reads per second and normal miss traffic
 | 40       | 12,250                                      | yes                     |
 
 Doubling the shard count roughly halves the blast radius. So you have two levers: more, smaller shards (each failure matters less) and replication (the failure matters almost not at all). Smaller shards cost operational complexity; replication costs RAM. Many teams use both.
+
+Extra database reads per second when one shard is lost (500,000 reads/s, 98% hit ratio), against the 15,000 headroom:
+
+```mermaid
+xychart-beta
+  title "Extra DB reads/s after losing a shard"
+  x-axis ["5 shards", "10 shards", "20 shards", "40 shards"]
+  y-axis "reads/s" 0 --> 100000
+  bar [98000, 49000, 24500, 12250]
+```
+
+Only 40 shards fits under the 15,000 headroom. Doubling shards roughly halves the blast radius.
 
 ## 9. Common pitfalls
 

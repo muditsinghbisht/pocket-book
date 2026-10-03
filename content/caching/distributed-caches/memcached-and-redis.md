@@ -54,6 +54,18 @@ Consequences:
 
 Recent versions use a segmented LRU (hot, warm and cold segments plus a background crawler that reclaims expired items), which reduces lock contention and protects items that are being accessed repeatedly from being evicted by a scan of one-off keys. The details vary by version, so treat the main point as: "the LRU is approximately LRU and per class".
 
+Internal fragmentation in slab chunks (waste as a share of the chunk):
+
+```mermaid
+xychart-beta
+  title "Wasted share of chunk (%)"
+  x-axis ["130 B in 152 B", "241 B in 304 B"]
+  y-axis "% wasted" 0 --> 30
+  bar [14.5, 20.7]
+```
+
+> **Key idea:** eviction is per slab class. A class can evict hard while another class sits on free or cold chunks (slab calcification).
+
 ### 2.2 Limits and expiry
 
 Keys are limited to 250 bytes. Values are limited to 1 MB by default (configurable, but large items fit poorly in the slab scheme and in network buffers; very large values should be split or stored elsewhere). Expiry is **lazy plus crawled**: an expired item is detected when it is read (and dropped), and a background crawler reclaims expired items so they do not occupy memory waiting for LRU pressure. TTLs longer than 30 days in the classic protocol are interpreted as absolute Unix timestamps rather than relative seconds, a quirk worth remembering when you see items expire "immediately" because someone passed a large relative number.
@@ -86,6 +98,25 @@ Redis executes commands on a **single main thread** in an event loop. Commands f
 **What is not single-threaded.** This is a place where outdated lore misleads. Since Redis 6, the server can optionally use additional **I/O threads** to read from and write to sockets (parsing and writing replies) while command execution itself remains on the main thread. This is off by default and configurable; it helps when network I/O, not command execution, is the bottleneck. In addition, Redis uses background threads for operations such as closing files, fsync of the AOF and lazy freeing of large objects (`UNLINK`, and lazy-free configuration options, which reclaim memory off the main thread so deleting a huge key does not stall). RDB snapshots and AOF rewrites are performed by a **forked child process**. So "Redis is single-threaded" is accurate only for command execution. Recent versions continue to evolve their threading, so check your version's notes.
 
 **Latency.** A simple command costs on the order of microseconds to tens of microseconds server-side; the round trip over a network adds hundreds of microseconds within a data center. Because round trips dominate, **pipelining** (send many commands without waiting for each reply) and batch commands (`MGET`, `MSET`) give large throughput gains. A client doing 100 sequential gets at a 0.3 ms round trip spends 30 ms; pipelined in one batch it spends little over one round trip plus server time, perhaps 0.5 ms.
+
+Where Redis threads fit:
+
+```mermaid
+flowchart LR
+  C[Clients] --> IO["Optional I/O threads (Redis 6+)"]
+  IO --> M["Main thread: executes commands one at a time"]
+  M --> BG["Background threads: fsync, lazy free"]
+```
+
+Round trips dominate latency, so pipelining pays off (100 gets at a 0.3 ms round trip):
+
+```mermaid
+xychart-beta
+  title "100 GETs: total time (ms)"
+  x-axis ["Sequential", "Pipelined"]
+  y-axis "ms" 0 --> 35
+  bar [30, 0.5]
+```
 
 ### 3.2 Data structures and their costs
 
@@ -130,6 +161,29 @@ The log grows, so Redis periodically performs an **AOF rewrite**, again with a f
 
 **Choosing.** For a pure cache, many deployments turn persistence off entirely: after a crash they accept a cold cache, and they use replicas for availability. That removes the fork risk. If you do want warm restarts, RDB snapshots (perhaps taken on a replica rather than the primary, so the primary never forks) are a common compromise. If Redis holds data that is not recoverable elsewhere, use AOF with `everysec` plus replication plus backups, and understand that even then Redis is not a fully durable database: replication is asynchronous and `everysec` can lose a second.
 
+RDB versus AOF at a glance:
+
+|                | RDB snapshot                            | AOF                       |
+| -------------- | --------------------------------------- | ------------------------- |
+| What it stores | point-in-time dump                      | log of every write        |
+| Loss on crash  | since last snapshot (for example 5 min) | about 1 s with `everysec` |
+| Main cost      | fork pause and copy-on-write memory     | fsync cost, log rewrites  |
+| Restart speed  | fast                                    | slower (replay)           |
+
+The fork-and-copy-on-write snapshot:
+
+```mermaid
+sequenceDiagram
+  participant P as Parent (serves clients)
+  participant K as Child (snapshot)
+  participant D as Disk
+  P->>K: fork() (brief pause)
+  K->>D: write RDB
+  P->>P: client write dirties a page
+  Note over P,K: page is copied (copy-on-write)
+  K-->>P: done, memory shared again
+```
+
 ### 3.5 Replication
 
 Redis replication is asynchronous primary-replica. A replica connects and issues `PSYNC`. If it has a history the primary can continue from (identified by a replication ID and offset, and still within the replication backlog buffer), a partial resynchronisation occurs. Otherwise there is a full resynchronisation: the primary forks, generates an RDB, sends it, and buffers writes made meanwhile. Replicas can have their own replicas (chained). Replicas are normally read-only. As discussed in the failover lesson, size the backlog and the client output buffers deliberately. Newer versions have added options such as diskless replication, where the RDB is streamed directly to replica sockets without touching the primary's disk; whether it is the default depends on version.
@@ -137,6 +191,22 @@ Redis replication is asynchronous primary-replica. A replica connects and issues
 ### 3.6 Sentinel
 
 Redis Sentinel is a separate set of processes that monitor a primary and its replicas, detect failure by quorum, elect a leader among the Sentinels, promote a replica and reconfigure the others, and act as a service discovery source: clients ask a Sentinel "who is the primary of `mymaster`?". Sentinel suits a **single shard** (one dataset that fits on one machine) needing automatic failover. It does not shard data. Run an odd number of Sentinels, at least three, in independent failure domains.
+
+Sentinel failover for a single shard:
+
+```mermaid
+sequenceDiagram
+  participant S as Sentinels (3 or more)
+  participant P as Primary
+  participant R as Replica
+  participant C as Client
+  S->>P: ping, no reply (subjectively down)
+  S->>S: quorum agrees (objectively down)
+  S->>S: elect leader
+  S->>R: promote
+  C->>S: who is primary of mymaster?
+  S-->>C: replica address
+```
 
 ### 3.7 Redis Cluster
 
@@ -160,6 +230,17 @@ If a client asks the wrong node, the node replies `MOVED <slot> <address>`, a pe
 
 **Availability caveat.** Cluster uses asynchronous replication, so as with Sentinel, acknowledged writes can be lost on failover. If a primary and all its replicas fail, the slots it owned are unavailable, and by default the cluster stops accepting writes for the entire cluster until coverage is restored (a configuration parameter allows partial availability). Know your setting.
 
+Where each mode fits:
+
+```mermaid
+flowchart TD
+  A[Need a shared cache] --> B{Need one dataset on one machine with failover?}
+  B -- yes --> SEN[Redis plus Sentinel]
+  B -- no --> C{Data larger than one machine?}
+  C -- yes --> CL[Redis Cluster, 16384 slots]
+  C -- no --> D[Single node or replicated pair]
+```
+
 ## 4. Memcached versus Redis: choosing
 
 | Dimension                         | Memcached                               | Redis                                                         |
@@ -175,6 +256,19 @@ If a client asks the wrong node, the node replies `MOVED <slot> <address>`, a pe
 A common guideline: if you need a simple, large, multi-core, shared blob cache and you control distribution through a proxy, Memcached is excellent. If you need structures, atomic server-side operations, persistence, built-in failover or you want one system to do several jobs, choose Redis. Note that mixing roles in one Redis (cache plus queue plus primary store) couples their failure modes and eviction policies; a cache needs eviction, a queue must never evict. Keep them on separate instances.
 
 Licensing and distribution of Redis have changed over the years and compatible forks exist; if that matters to you, check current terms and projects before deciding. That is a policy question rather than an architecture one, so we only note it.
+
+Choosing a system:
+
+```mermaid
+flowchart TD
+  Q[Workload] --> S{Structures, persistence, scripts or built-in failover?}
+  S -- yes --> R[Redis]
+  S -- no --> T{Simple blobs, many cores, proxy handles distribution?}
+  T -- yes --> M[Memcached]
+  T -- no --> R
+```
+
+> **Key idea:** keep cache, queue and primary store on separate Redis instances. A cache must evict, a queue must never evict.
 
 ## 5. A worked example: choosing persistence and sizing for a fork
 

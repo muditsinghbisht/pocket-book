@@ -40,11 +40,39 @@ The things to understand about purges:
 - **Variants.** An object may exist under many cache keys (languages, devices, query strings). A purge by URL may or may not remove all variants. Check how your provider treats `Vary`ing variants and query strings.
 - **Races with the origin.** Sequence matters: update the origin first, **then** purge. If you purge first, a request in the gap refetches the old content from the origin and caches it again for a full TTL. If the origin itself is replicated with lag (database replicas, an object store with eventual consistency), even "update then purge" can refetch old content from a lagging origin replica. The remedy is to purge again after a short delay, or to purge after the origin confirms replication.
 
+Why the order matters, update origin then purge:
+
+```mermaid
+sequenceDiagram
+  participant A as Admin
+  participant O as Origin
+  participant C as CDN
+  participant U as User
+  A->>O: 1. update content
+  A->>C: 2. purge URL
+  U->>C: GET (miss)
+  C->>O: GET
+  O-->>C: new content (cached for a TTL)
+  Note over A,C: purge first instead and a request in the gap re-caches the OLD content
+```
+
 ### 1.4 Purge by tag (surrogate keys)
 
 Purging by URL does not scale when one change affects many pages. Imagine a product's price changes: the product page, the category listings it appears in, search results, the home page carousel and a hundred "related items" widgets all embed it. Enumerating the URLs is error-prone.
 
 With **tag-based purging** (CDN vendors call the tags "surrogate keys" or "cache tags"), the origin attaches a header listing tags to each response, for example `Surrogate-Key: product-42 category-7 homepage` (the header name varies by provider; some use `Cache-Tag` or similar). The CDN indexes objects by tag. Later you call "purge tag `product-42`", and every object that mentioned that tag is invalidated, wherever it lives. The origin does not have to know which URLs exist, only which entities contributed to each response, which it knows at render time. This is the same idea as dependency tracking in application caches (cache tags in frameworks), and the correctness burden is the same: **if the origin forgets to tag a dependency, a stale copy survives the purge.** Treat tagging as part of the rendering contract and test it.
+
+One change fans out to many pages through tags:
+
+```mermaid
+mindmap
+  root((Purge tag product-42))
+    Product page
+    Category listings
+    Search results
+    Home carousel
+    Related items widgets
+```
 
 ### 1.5 Soft purge
 
@@ -64,6 +92,16 @@ flowchart TD
   U --> D[Also keep short browser TTL]
   T --> D
 ```
+
+Choosing a method at a glance:
+
+| Method        | Speed              | Atomic | Scope              | Main cost                 |
+| ------------- | ------------------ | ------ | ------------------ | ------------------------- |
+| TTL expiry    | up to the TTL      | no     | everything         | staleness                 |
+| Versioned URL | instant            | yes    | referenced assets  | entry point must be fresh |
+| Purge by URL  | seconds to minutes | no     | listed URLs        | misses variants, tiers    |
+| Purge by tag  | seconds to minutes | no     | all tagged objects | origin must emit tags     |
+| Soft purge    | seconds to minutes | no     | as above           | serves stale briefly      |
 
 ## 2. Caching dynamic content
 
@@ -133,6 +171,22 @@ The root cause is a mismatch: **the cache key says two requests are equivalent, 
 - Limit cache key normalisation differences between the CDN and the origin: if the CDN treats two URLs as the same key but the origin treats them as different resources, that is the same mismatch.
 - Monitor for unusual values in cached responses.
 
+Poisoning as a sequence (the cache key ignores an input the origin uses):
+
+```mermaid
+sequenceDiagram
+  participant X as Attacker
+  participant C as Cache
+  participant O as Origin
+  participant V as Visitor
+  X->>C: GET /page with malicious unkeyed header
+  C->>O: forward (miss)
+  O-->>C: page reflecting attacker value
+  Note over C: stored under the normal key
+  V->>C: GET /page
+  C-->>V: poisoned page (hit)
+```
+
 ### 4.2 Web cache deception
 
 The attacker tricks the cache into **storing a private response as if it were public**, then fetches it. The pattern: the cache decides storability using a rule based on the URL (for example, "paths ending in `.css` or `.jpg` are static, cache them for an hour"), while the origin routes the same URL to a dynamic page ignoring the suffix or extra path segments. An attacker lures a logged-in victim to a URL like `/account/profile/anything.css`. The origin, ignoring the trailing segment, returns the victim's private profile page; the cache, seeing `.css`, stores it publicly; the attacker then requests the same URL and receives the victim's data.
@@ -143,6 +197,24 @@ The root cause is again a disagreement, this time between the cache's and the or
 - Make the origin return 404 for unknown path suffixes instead of ignoring them.
 - Use `Content-Type` checks: do not cache a response with an HTML content type under a static-asset rule.
 - Separate static asset hosts or paths from application routes.
+
+Deception as a sequence (the cache decides by extension, the origin ignores it):
+
+```mermaid
+sequenceDiagram
+  participant V as Logged-in victim
+  participant C as Cache
+  participant O as Origin
+  participant X as Attacker
+  V->>C: GET /account/profile/x.css (lured)
+  C->>O: miss
+  O-->>C: private profile page
+  Note over C: ".css" so stored as public
+  X->>C: GET /account/profile/x.css
+  C-->>X: victim's private page
+```
+
+> **Key idea:** both attacks exploit a disagreement between how the cache and the origin interpret a request. Decide cacheability from the origin's headers, not URL patterns.
 
 ### 4.3 Related hygiene
 
@@ -166,6 +238,25 @@ An object is requested 20 times per second at one PoP (1,728,000 requests per da
 - TTL 600 s: 144 renders, 7.2 CPU-seconds. Hit ratio 99.99%.
 
 Origin cost falls proportionally to `1/TTL`, with sharply diminishing absolute returns: moving from 1 s to 10 s saves 3,888 CPU-seconds per day, moving from 60 s to 600 s saves under 65. Meanwhile staleness cost grows linearly with TTL. The sensible choice is usually the knee: TTL of seconds to a minute for dynamic data, with soft purge on change. Multiply by the number of PoPs and tiers to see the real total; with a shield, the effective origin cost is that of a single cache.
+
+The TTL economics example as numbers (renders per day, 20 requests per second at one PoP):
+
+```mermaid
+xychart-beta
+  title "Origin renders per day by TTL"
+  x-axis ["1 s", "10 s", "60 s", "600 s"]
+  y-axis "renders" 0 --> 90000
+  bar [86400, 8640, 1440, 144]
+```
+
+| TTL   | Renders per day | CPU-seconds per day | Hit ratio    |
+| ----- | --------------- | ------------------- | ------------ |
+| 1 s   | 86,400          | 4,320               | about 95%    |
+| 10 s  | 8,640           | 432                 | about 99.5%  |
+| 60 s  | 1,440           | 72                  | about 99.92% |
+| 600 s | 144             | 7.2                 | 99.99%       |
+
+> **Key idea:** origin cost falls as 1/TTL with diminishing returns while staleness grows linearly, so pick the knee.
 
 ### 5.2 Performance levers beyond hit ratio
 

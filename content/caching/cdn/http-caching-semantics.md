@@ -43,6 +43,21 @@ Directives that control storage:
 
 A common misreading: `no-cache` does **not** mean "do not cache". It means "you may store this, but you must **revalidate** with the origin before reusing it". We return to this in Section 5. The directive that forbids storing is `no-store`.
 
+A cache's storability decision, in order:
+
+```mermaid
+flowchart TD
+  R[Response to GET] --> A{no-store?}
+  A -- yes --> N[Do not store]
+  A -- no --> B{private and cache is shared?}
+  B -- yes --> N
+  B -- no --> C{Authorization and no public, s-maxage or must-revalidate?}
+  C -- yes --> N
+  C -- no --> D[Store it]
+```
+
+> **Key idea:** `no-cache` stores and revalidates; `no-store` never stores. Only `no-store` protects secrets.
+
 ## 3. Freshness
 
 A stored response is **fresh** if its age is less than its freshness lifetime. While fresh it can be served directly; once **stale**, a cache must revalidate (or refetch) before serving it, unless some other rule (such as `stale-while-revalidate` or an error situation covered by `stale-if-error`) permits otherwise.
@@ -66,6 +81,15 @@ Heuristic freshness is a trap. If you do not specify lifetimes, caches may inven
 
 Worked example: the origin sends `Cache-Control: max-age=600`. A CDN edge stores it. Later a browser requests it through the CDN; the edge has held it for 240 seconds and the shield held it 100 seconds before that. The edge responds with `Age: 340`. The browser also stores it, and computes: freshness lifetime 600 seconds, age 340, so remaining freshness 260 seconds. For the next 260 seconds the browser will not contact anyone. The user sees stale-by-up-to-600-seconds data though only 260 seconds more of browser caching were granted: the **lifetime is not additive across layers; it is bounded by the original `max-age`, which counts age cumulatively**. By contrast, a CDN that ignores `Age` and re-stamps the response with a fresh `max-age=600` would allow up to `600 + 600` seconds total staleness. This is a classic cause of "I set 10 minutes but data was an hour old": an intermediary resets the clock.
 
+The worked age example as a chain (lifetimes are not additive; the original `max-age` counts age cumulatively):
+
+```mermaid
+flowchart LR
+  O["Origin: max-age=600, Age 0"] --> S["Shield holds 100 s"]
+  S --> E["Edge holds 240 s, sends Age 340"]
+  E --> B["Browser: 600 - 340 = 260 s left"]
+```
+
 ### 3.3 `max-age` and `s-maxage`
 
 `max-age` applies to all caches. `s-maxage` applies only to shared caches and overrides `max-age` there. Thus a common pattern is:
@@ -85,6 +109,18 @@ Cache-Control: public, max-age=31536000, immutable
 ```
 
 `immutable` tells the browser not to revalidate even on a user-initiated reload, because the content at this URL will never change (a feature some browsers honour and others ignore, which is harmless). Changes are deployed as new URLs referenced from HTML that is itself cached briefly or revalidated each time. This **cache busting by naming** pattern sidesteps invalidation completely, which is why it is the foundation of front-end asset delivery.
+
+The life of one stored response, as states:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Fresh: stored, age < lifetime
+  Fresh --> Stale: age reaches lifetime
+  Stale --> Revalidating: next request, send If-None-Match
+  Revalidating --> Fresh: 304, new freshness
+  Revalidating --> Fresh: 200, new body
+  Stale --> Fresh: purge or refetch
+```
 
 ## 4. Validation
 
@@ -157,6 +193,16 @@ For the first 60 seconds the response is fresh. From 60 to 360 seconds it is sta
 
 Browser and CDN support differs. Some CDNs implement it fully, some partially; some treat it as a hint only for certain states. Test the behaviour with your provider rather than assuming.
 
+Timeline for `max-age=60, stale-while-revalidate=300`:
+
+```mermaid
+timeline
+  title Response age in seconds
+  0 to 60 : Fresh : served from cache
+  60 to 360 : Stale : served instantly : background revalidation
+  After 360 : Too stale : request waits for origin
+```
+
 ### 6.2 `stale-if-error`
 
 ```
@@ -187,6 +233,18 @@ By default `/product?id=7`, `/product?id=7&utm_source=mail` and `/product?utm_ca
 
 A worked example: a campaign page receives 1,000,000 requests per day at one PoP, with a 1 hour TTL. Suppose 700,000 of them carry a tracking parameter with 20,000 distinct values (equally frequent) and 300,000 carry none. With the parameter in the key there are 20,001 keys. Each tracked variant gets `700,000 / 20,000 = 35` requests per day, spread randomly over 24 one-hour windows. The expected number of windows that contain at least one request is `24 * (1 - (23/24)^35) = 24 * (1 - 0.228) = 18.5`, and each such window starts with a miss. So each variant misses about 18.5 times out of 35 requests, and the 20,000 variants produce about 370,000 misses per day. The untracked URL adds about 24. Overall hit ratio is roughly `1 - 370,000/1,000,000 = 63%`, and the origin sees about 370,000 requests per day. With the parameter ignored in the key, there is a single key and about 24 misses per day: a hit ratio above 99.99% and a 15,000-fold reduction in origin requests. One configuration line makes that difference.
 
+The campaign-page example (1,000,000 requests per day, one PoP, 1 hour TTL), misses per day:
+
+```mermaid
+xychart-beta
+  title "Origin misses per day"
+  x-axis ["Tracking param in key", "Param ignored"]
+  y-axis "misses" 0 --> 400000
+  bar [370000, 24]
+```
+
+> **Key idea:** one cache-key configuration line moved hit ratio from about 63% to above 99.99%.
+
 ### 7.2 Other components that may belong in the key
 
 Hostname (for multi-tenant sites), device class (mobile versus desktop, if you serve different HTML), language, country, and a few request headers or cookies. Each addition multiplies the number of variants: the key space is the product of the cardinalities. Keying on 3 device classes, 10 languages and 5 countries yields 150 variants per URL. Fewer, coarser dimensions are better; normalise values before keying (map the `Accept-Language` header to one of the 10 languages you support rather than keying on the raw header, which has thousands of distinct values).
@@ -212,6 +270,16 @@ How it works in a cache: the cache's key for the URL includes the _values of the
 - Omitting Vary where there should be one. If you serve different content by `Accept-Language` without `Vary: Accept-Language` (or an equivalent CDN rule), the first visitor's language is cached for everyone. The failure is silent and affects correctness, not only performance.
 
 Many CDNs treat `Vary` only partially for performance reasons: they may honour `Accept-Encoding` natively and ignore or limit other headers unless configured. Read your provider's documentation. An especially safe approach is to put whatever varies explicitly into the CDN's cache key configuration and limit what the origin's `Vary` can do.
+
+`Vary` at a glance:
+
+| Header in `Vary`  | Distinct values            | Effect on hit ratio                                |
+| ----------------- | -------------------------- | -------------------------------------------------- |
+| `Accept-Encoding` | a few (gzip, br, identity) | fine, the legitimate use                           |
+| `Accept-Language` | many raw values            | fragments unless normalised to supported languages |
+| `User-Agent`      | hundreds of thousands      | near-zero hits for that URL                        |
+| `Cookie`          | about one per user         | shared cache effectively disabled                  |
+| `*`               | n/a                        | uncacheable                                        |
 
 ## 9. Recipes
 

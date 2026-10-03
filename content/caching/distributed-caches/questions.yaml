@@ -39,3 +39,203 @@ questions:
     hints:
       - When is h mod 9 equal to h mod 10?
       - With consistent hashing, which keys change owner when a node joins?
+
+  - id: distributed-caches-threading-01
+    level: beginner
+    type: mcq
+    q: Which statement about Memcached and Redis execution is correct?
+    options:
+      - Both execute all commands on a single thread
+      - Redis is multithreaded for commands, while Memcached is single-threaded
+      - Both use one thread per key
+      - Memcached is multithreaded, while Redis executes commands on one main thread
+    answer: 3
+    explain: >-
+      Memcached uses worker threads sharing the hash table, so one instance
+      uses many cores. Redis executes commands one at a time on a main thread
+      (which makes each command atomic); since Redis 6 optional I/O threads
+      help with socket reads and writes only.
+    hints:
+      - Which one is known for atomic single commands without locks?
+      - Redis made single commands atomic by design.
+
+  - id: distributed-caches-slots-01
+    level: beginner
+    type: mcq
+    q: How does Redis Cluster map a key to a node?
+    options:
+      - hash(key) mod number of nodes
+      - A ring with virtual nodes
+      - CRC16(key) mod 16384 gives a slot, and a table maps slots to nodes
+      - The client picks a node at random and follows redirects forever
+    answer: 2
+    explain: >-
+      Redis Cluster has a fixed 16384 slots. Keys never change slot; resizing
+      moves whole slots between nodes. Clients cache the slot table and are
+      corrected with `MOVED` replies.
+    hints:
+      - The number of partitions never changes.
+      - Think of a fixed table, not a ring.
+
+  - id: distributed-caches-modn-01
+    level: intermediate
+    type: numeric
+    q: >-
+      Keys are placed with hash(key) mod N. The cluster grows from 7 nodes to
+      8. What percentage of keys change owner?
+    answer: 87.5
+    tolerance: 0.1
+    unit: "%"
+    explain: >-
+      A key stays only if h mod 7 equals h mod 8, which is 1 in 8 of the
+      residues over a full cycle, so the fraction that moves is N/(N+1) = 7/8 =
+      87.5%. Consistent hashing would move about 1/8 = 12.5%.
+    hints:
+      - The fraction that moves is N/(N+1).
+      - Verify on a small case such as 4 to 5 nodes, where 80% move.
+
+  - id: distributed-caches-memory-01
+    level: intermediate
+    type: numeric
+    q: >-
+      You cache 50 million items. Each has a 30 byte key, a 170 byte value and
+      about 60 bytes of metadata, and the allocator adds 10% on top. How many
+      GB of memory does the cache need (1 GB = 10^9 B, one copy)?
+    answer: 14.3
+    tolerance: 0.1
+    unit: GB
+    explain: >-
+      Per item: (30 + 170 + 60) x 1.10 = 286 bytes. Total: 50 x 10^6 x 286 B =
+      14.3 x 10^9 B = 14.3 GB. The naive estimate of value size alone would be
+      8.5 GB, about 40% too low.
+    hints:
+      - Include key and metadata, then apply the allocator factor.
+      - Overhead per item is key plus metadata plus rounding.
+
+  - id: distributed-caches-choose-01
+    level: intermediate
+    type: mcq
+    q: >-
+      You need a live leaderboard with atomic score increments and range
+      queries by rank, plus automatic failover. Which fits best?
+    options:
+      - Memcached with a blob per leaderboard and `cas`
+      - Redis sorted sets, with replication and Sentinel or Cluster
+      - A CDN with a short TTL
+      - Memcached behind consistent hashing
+    answer: 1
+    explain: >-
+      Sorted sets give O(log N) score updates and rank range queries on the
+      server, and each command is atomic. Redis also has built-in replication
+      and failover. Memcached stores opaque blobs and has no structures or
+      failover, so every update would be a read-modify-write.
+    hints:
+      - Which system has server-side data structures?
+      - Atomic increments and rank queries are server-side operations.
+
+  - id: distributed-caches-frag-01
+    level: advanced
+    type: mcq
+    q: >-
+      Redis reports a memory fragmentation ratio (`used_memory_rss` over
+      `used_memory`) of 0.8 and p99 latency is climbing. What is the most
+      likely problem?
+    options:
+      - External fragmentation, so enable active defragmentation
+      - Replication backlog is too small
+      - Too many Sentinels
+      - The OS is swapping part of Redis memory to disk
+    answer: 3
+    explain: >-
+      A ratio below 1.0 means the OS has given the process less resident memory
+      than Redis has allocated, so part of it is swapped out, which is
+      disastrous for latency. Check swap usage and free memory immediately.
+      High fragmentation shows as a ratio well above 1.5.
+    hints:
+      - Which direction does fragmentation push the ratio?
+      - Below 1.0 is a warning sign, not a good sign.
+
+  - id: distributed-caches-redirect-01
+    level: advanced
+    type: mcq
+    q: >-
+      A Redis Cluster client gets `ASK 9189 10.0.0.7:6379` for a key. What
+      should it do?
+    options:
+      - Update its slot table permanently to point slot 9189 at that node
+      - Send the command (preceded by ASKING) to that node once, without updating its table
+      - Treat the key as missing
+      - Re-run CRC16 with a different seed
+    answer: 1
+    explain: >-
+      `ASK` is a one-time redirect used while a slot is being migrated; the
+      slot still belongs to the source node. `MOVED` is the permanent redirect
+      after which the client should update its table.
+    hints:
+      - Which redirect is permanent?
+      - One redirect updates the table, the other does not.
+
+  - id: distributed-caches-rolling-01
+    level: staff
+    type: mcq
+    q: >-
+      You deploy a new version that adds a field to cached user objects. During
+      the rolling deploy both versions share the cache and old instances start
+      throwing on unknown fields. What is the most robust approach?
+    options:
+      - Flush the cache before the deploy
+      - Shorten every TTL to 5 seconds
+      - Include a schema version in the key (user:v7 and user:v8) and use tolerant readers
+      - Deploy everything at once during low traffic
+    answer: 2
+    explain: >-
+      Versioned keys keep versions from reading each other's entries and give a
+      clean rollback, since v7 entries stay valid until their TTL. Tolerant
+      readers that ignore unknown fields add safety. The cost is a cold cache
+      for the new version, which warming can soften. Flushing causes a miss
+      storm and does not fix the mixed-version window.
+    hints:
+      - Keep the two versions from sharing entries.
+      - Think of the mixed-version window and rollback.
+
+  - id: distributed-caches-hotkey-01
+    level: staff
+    type: mcq
+    q: >-
+      One key receives 30% of a 20-node cluster's traffic and its owner is
+      saturated. Which response is best?
+    options:
+      - Add 20 more nodes; consistent hashing will redistribute the load
+      - Add a short-lived in-process cache or split the key into suffixed copies chosen at random on read
+      - Switch from consistent hashing to mod-N hashing
+      - Increase the number of virtual nodes
+    answer: 1
+    explain: >-
+      Sharding spreads keys, not load. Whatever node owns the hot key carries
+      at least 30% of cluster requests regardless of node count, vnodes or
+      hash scheme. Copies of the key on several nodes or an application-side
+      cache divide the reads.
+    hints:
+      - Does a hash function split one key?
+      - Consistent hashing balances key counts, not heat.
+
+  - id: distributed-caches-failover-01
+    level: staff
+    type: free
+    q: >-
+      A 10-shard cache serves 500,000 reads/s at a 98% hit ratio and the
+      database has 15,000 reads/s of headroom. Show why losing one shard with
+      no replica is a problem, and what an 8-second failover with a replica
+      changes.
+    answer: >-
+      One shard holds 50,000 reads/s, of which 49,000 would hit the cache, so
+      its loss adds about 49,000 database reads/s, over three times the
+      headroom, and lasts until the replacement refills (minutes to hours). With
+      a warm replica the extra 49,000 reads/s lasts only about 8 seconds and
+      the data is already present afterwards, which breakers, request
+      coalescing and load shedding can absorb.
+    explain: >-
+      Replication in a cache is load protection: it shortens the miss burst
+      from the refill time to the failover time. More shards also shrink the
+      blast radius, since extra reads scale as 1/S, but only about 40 shards
+      would fit under 15,000 without replicas.

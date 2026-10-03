@@ -34,6 +34,18 @@ CDNs deliver three distinct benefits and it helps to keep them separate:
 
 Even uncacheable traffic can benefit: the CDN terminates the user's TCP and TLS connection nearby (cheap round trips) and uses a long-lived, warm, optimised connection to the origin. This is sometimes called dynamic site acceleration.
 
+The Sydney example in numbers (approximate, from the round-trip counts above):
+
+```mermaid
+xychart-beta
+  title "Sydney user: time in ms"
+  x-axis ["First byte, origin", "First byte, edge", "Full image, origin", "Full image, edge"]
+  y-axis "ms" 0 --> 1100
+  bar [600, 30, 1000, 55]
+```
+
+> **Key idea:** a nearby cache shrinks every round trip from about 200 ms to about 10 ms, and a page needs dozens of round trips. No origin tuning can do that.
+
 ## 2. Anatomy of a CDN
 
 A CDN is a globally distributed fleet of servers organised into **points of presence** (PoPs, sometimes called edge locations): clusters of servers in data centers or at internet exchange points and inside ISPs' networks. A large provider operates hundreds of PoPs in many countries. A PoP contains many servers; requests are balanced across them.
@@ -73,6 +85,16 @@ Disadvantages: BGP "nearest" is measured in network hops and policy, not latency
 
 Many large providers use anycast for their edge IPs and DNS (DNS servers themselves are commonly anycast) and add smarter steering on top. For you as a CDN customer the distinction mainly matters when debugging: an unexpectedly slow response may come from a user landing at a distant PoP.
 
+At a glance, the two steering techniques:
+
+|                  | DNS-based routing                      | Anycast                               |
+| ---------------- | -------------------------------------- | ------------------------------------- |
+| Who decides      | CDN's DNS answers per resolver         | Internet routers via BGP              |
+| Sees             | The resolver, not the user             | The user's packets                    |
+| Failover speed   | Minutes (DNS TTL and resolver caching) | Seconds to a minute (BGP convergence) |
+| Steering control | Fine-grained (load, health)            | Coarse (BGP announcements)            |
+| Weak spot        | Distant public or corporate resolvers  | "Nearest" is hops, not latency        |
+
 ## 4. The life of a request
 
 ```mermaid
@@ -108,6 +130,17 @@ Two numbers are commonly confused:
 
 They differ because of object sizes and tiers. Suppose in a day there are 10 million requests, 90% for small images (20 KB, hit ratio 98%) and 10% for large videos segments (2 MB, hit ratio 70%). Request hit ratio is `0.9 * 0.98 + 0.1 * 0.70 = 0.882 + 0.07 = 95.2%`. Bytes: images `9M * 20 KB = 180 GB` total, of which 2% miss: 3.6 GB at origin. Video segments `1M * 2 MB = 2,000 GB` total, 30% miss: 600 GB at origin. Total origin bytes 603.6 GB of 2,180 GB total, so **byte offload is 72.3%**, although the request hit ratio was 95.2%. The large objects, though few, dominate the origin's bandwidth bill. Measure both, and optimise for the one that costs you money.
 
+The worked example above, as origin bytes. Few large objects dominate the origin bill:
+
+```mermaid
+pie showData
+  title Origin bytes served (GB)
+  "Small images (98% hit)" : 3.6
+  "Video segments (70% hit)" : 600
+```
+
+> **Key idea:** request hit ratio was 95.2% but byte offload was only 72.3%. Report both, and optimise the one that costs you money.
+
 ### 4.2 Request collapsing
 
 When a popular object is not in the cache (new, expired, or just purged), many users may request it at the same instant. Without precautions, the PoP would send many identical requests upstream: a miniature stampede. Modern CDNs implement **request collapsing** (also called request coalescing): the first miss goes to the origin; concurrent requests for the same key wait for that response and share it. With this, 500 simultaneous requests to one PoP yield one origin request, not 500. This is the same principle as single-flight in application caches (see the stampede chapter). But collapsing has its limits and subtleties:
@@ -115,6 +148,21 @@ When a popular object is not in the cache (new, expired, or just purged), many u
 - It applies per PoP (or per server) unless a shield consolidates further. If there are 100 PoPs, a cold object may cause 100 origin requests, one per PoP, unless a shield is in the path. That is a strong argument for tiering.
 - Waiting requests wait on the slowest case: if the first request takes 5 seconds, so do all the others. Providers add timeouts and may let waiting requests proceed individually after a limit.
 - If the response turns out to be uncacheable (for example because it sets a cookie or carries `Cache-Control: private`), collapsed requests cannot share it, and some CDNs then serialise requests, one after another, slowing everyone. This is a famous pitfall: marking dynamic content "no-store" while the CDN still tries to collapse can serialise requests unless configured otherwise. Check your provider's behaviour for uncacheable responses.
+
+Collapsing in action: 500 simultaneous requests to one PoP cause one origin fetch.
+
+```mermaid
+sequenceDiagram
+  participant U as Users (500)
+  participant E as Edge PoP
+  participant O as Origin
+  U->>E: GET /hot.jpg (request 1)
+  E->>O: GET /hot.jpg (the only fetch)
+  U->>E: GET /hot.jpg (requests 2 to 500)
+  Note over E: wait on the in-flight fetch
+  O-->>E: 200 + Cache-Control
+  E-->>U: 200 to all 500 (stored)
+```
 
 ## 5. Tiered caching and origin shield
 
@@ -130,6 +178,25 @@ Trade-offs of tiering:
 - **Single point of concentration:** all traffic funnels through the shield on misses; if it fails, providers route around it, but check this behaviour.
 - **Cost:** some providers charge for mid-tier traffic, or for shield usage.
 - **Purges and consistency:** a purge must clear every tier. A staleness in the shield re-infects the edges: after the edge is purged it refetches from a shield that still holds the old copy. Understand your provider's purge propagation across tiers (the invalidation lesson covers this).
+
+The tiering arithmetic from above (100 PoPs, one long-tail object, requests per hour reaching the origin):
+
+```mermaid
+flowchart LR
+  subgraph Flat
+    P1[100 PoPs] -->|100 misses| O1[(Origin)]
+  end
+  subgraph Tiered
+    P2[100 PoPs] -->|100 requests| S[Shield]
+    S -->|1 miss| O2[(Origin)]
+  end
+```
+
+|                                      | Flat        | With shield              |
+| ------------------------------------ | ----------- | ------------------------ |
+| Origin requests per hour, one object | 100         | 1                        |
+| 5 million long-tail objects          | 500 million | 5 million                |
+| Cost of tiering                      | none        | extra hop on edge misses |
 
 ## 6. What can be cached, and what else a CDN does
 

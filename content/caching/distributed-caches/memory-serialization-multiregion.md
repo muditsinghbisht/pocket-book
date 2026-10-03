@@ -36,6 +36,19 @@ total     = 100,000,000 * 315.7   = 31.6 GB
 
 That is 58% above the naive 20 GB. If the values are small, overhead dominates: for a 20 byte value with the same key and metadata, the item costs `(27 + 20 + 60) * 1.1 = 118` bytes, nearly six times the payload. For tiny values, packing many into a Redis hash or a compact structure (one cache entry holding 100 related small values) can dramatically cut per-value overhead; the cost is coarser invalidation and larger reads.
 
+Where the bytes go for one item (key 27 B, value 200 B, 60 B metadata, 10% allocator waste, 315.7 B in total):
+
+```mermaid
+pie showData
+  title Bytes per item
+  "Payload" : 200
+  "Key" : 27
+  "Metadata" : 60
+  "Allocator waste" : 28.7
+```
+
+> **Key idea:** 100 million items cost about 31.6 GB, not the naive 20 GB. For a 20 B value the item costs 118 B, nearly six times the payload.
+
 ## 2. Fragmentation
 
 ### 2.1 Internal fragmentation
@@ -59,6 +72,17 @@ Responses to high fragmentation: Redis (when built with its bundled allocator, j
 ### 2.4 Deleting big things
 
 Dropping a key with millions of elements frees memory proportional to its size and, if done synchronously, blocks the event loop. In Redis use `UNLINK` (asynchronous reclaim) rather than `DEL` for large keys, and consider lazy-free settings for eviction and expiry. Likewise `FLUSHALL ASYNC` rather than a synchronous flush.
+
+Reading the fragmentation ratio (`used_memory_rss / used_memory`):
+
+```mermaid
+flowchart TD
+  R[Ratio] --> A{Below 1.0?}
+  A -- yes --> W[Swapping: check swap now]
+  A -- no --> B{Above 1.5?}
+  B -- yes --> F[External fragmentation: active defrag or restart via failover]
+  B -- no --> H[Healthy, 1.0 to 1.5]
+```
 
 ## 3. Serialization
 
@@ -84,6 +108,18 @@ A distributed cache stores bytes, but your application has objects. Converting b
 
 A worked comparison. Take a record `{id: 123456789, name: "Ada Lovelace", active: true, score: 98.6}`. As compact JSON, it is about 70 bytes: field names are repeated in every record. A schema-based binary encoding stores field numbers instead of names, maybe 25 to 30 bytes. For 100 million records the difference is `(70 - 28) * 100M = 4.2 GB`, with the extra benefit of lower CPU. But the JSON version can be read with a one-line client command during an incident. There is no universally right answer; at small scale choose debuggability, at large scale measure.
 
+Size of one record by format (about 70 B as compact JSON against about 28 B in a schema-based binary encoding):
+
+```mermaid
+xychart-beta
+  title "Bytes per record"
+  x-axis ["JSON", "Schema-based binary"]
+  y-axis "bytes" 0 --> 80
+  bar [70, 28]
+```
+
+Over 100 million records the difference is `(70 - 28) * 100M = 4.2 GB`.
+
 ### 3.3 Schema evolution and cache versioning
 
 A rolling deployment means two versions of your code run simultaneously for minutes or hours, sharing one cache. Version 2 adds a field; version 1 does not know it. Cases:
@@ -94,6 +130,15 @@ A rolling deployment means two versions of your code run simultaneously for minu
 The robust technique is **versioned keys**: include a schema version in the key (`user:v7:123`). A new schema writes `v8` keys. Old and new versions of the application never read each other's entries. The cost is a cold cache for the new version, which you can mitigate by warming (see below) or by deploying first with dual reads. Treat the key prefix as part of the data contract. This also gives a clean rollback: v7 entries remain valid until their TTL expires.
 
 Remember the stale-entry cousin of this: a bug that cached bad data can be fixed instantly by bumping the version, instead of hunting keys to delete. That is a cheap, powerful invalidation tool for a whole class of entries.
+
+Versioned keys keep a rolling deploy safe:
+
+```mermaid
+flowchart LR
+  V1["App v1"] --> K7["user:v7:123"]
+  V2["App v2"] --> K8["user:v8:123"]
+  K8 -. "bump version = instant invalidation" .-> V2
+```
 
 ## 4. Compression
 
@@ -106,6 +151,17 @@ Let a value have size `S` bytes and compress to `S/r` where `r` is the compressi
 Example: values are 20 KB of JSON, `r = 4` (JSON compresses well), a fast general-purpose compressor of the LZ4 or Snappy family decompresses at roughly one to several GB/s per core (order of magnitude, hardware-dependent), so `td` for 20 KB is about 10 to 20 microseconds. The memory saving is `20 KB * 0.75 = 15 KB` per item. For 50 million items that is 750 GB saved: you need perhaps a quarter of the cache fleet. The CPU cost at 50,000 reads per second is `50,000 * 15 microseconds = 0.75` core-seconds per second, under one core. Strongly worth it.
 
 Counter-example: values are 200 bytes. Compression ratio may be near 1 (too little redundancy; compressor headers and dictionaries do not pay off), and the CPU time, though tiny, is not repaid. Skip compression below roughly a few hundred bytes to a kilobyte, a typical threshold; measure.
+
+Whether to compress a value:
+
+```mermaid
+flowchart TD
+  V[Value to cache] --> A{Already compressed or encrypted?}
+  A -- yes --> N[Store as is]
+  A -- no --> B{Larger than a few hundred bytes to 1 KB?}
+  B -- no --> N
+  B -- yes --> C["Compress with LZ4, Snappy or low-level Zstd, flag in header byte"]
+```
 
 ### 4.2 Practicalities
 
@@ -154,9 +210,28 @@ Treat the cache itself as geo-replicated (some products provide active-active re
 
 Route each user's requests to the region that "owns" their data (affinity). Then both the database primary and cache entries for that user live in one region and conflicts largely vanish. Failover to another region must handle the cold cache. This works well for user-partitioned data; poorly for global data (a product catalog read from everywhere).
 
+The four multi-region options compared:
+
+| Option                     | Staleness in remote region       | Complexity | Best for              |
+| -------------------------- | -------------------------------- | ---------- | --------------------- |
+| A: independent caches      | TTL plus replication lag         | low        | most systems          |
+| B: propagated invalidation | seconds, with a replica-lag race | medium     | fresher data          |
+| C: replicated cache        | low, but conflicts               | high       | rarely recommended    |
+| D: home region per key     | none for owned data              | medium     | user-partitioned data |
+
 ### 5.5 Region failover and cold starts
 
 If a region's cache is lost and traffic from a failed region shifts in, the surviving region receives extra load against its cache and database, and the keys relevant to the new users are not in its cache. Pre-warm with synthetic traffic or by replaying a sample of reads from the failed region where feasible; ensure the database in the receiving region is sized for a cold-cache period; use rate limiting and request coalescing. Capacity planning for this scenario is part of the next lesson.
+
+Cold start after a region failover:
+
+```mermaid
+flowchart LR
+  F[Region A lost] --> T[Traffic shifts to region B]
+  T --> M[Cold keys: miss burst]
+  M --> D[(Database in B)]
+  M -. mitigate .-> W["Pre-warm, coalesce requests, rate limit"]
+```
 
 ## 6. Common pitfalls
 

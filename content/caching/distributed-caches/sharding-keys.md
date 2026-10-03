@@ -78,6 +78,24 @@ Now put numbers on the consequence. Suppose a cluster of 4 nodes serves 100,000 
 
 Mod-N is fine only when the node set is fixed for the life of the data, for example when you pre-split into a large, fixed number of logical partitions (which is the idea we return to with hash slots). It is not fine when physical nodes come and go.
 
+The movement arithmetic so far, as a chart (percent of keys that change owner when one node is added):
+
+```mermaid
+xychart-beta
+  title "Keys moved when adding one node (%)"
+  x-axis ["4 to 5 mod-N", "4 to 5 ring", "9 to 10 mod-N", "9 to 10 ring"]
+  y-axis "% of keys" 0 --> 100
+  bar [80, 20, 90, 10]
+```
+
+|                           | Hit ratio drops to | Database reads per second (100,000 req/s, 95% hit) |
+| ------------------------- | ------------------ | -------------------------------------------------- |
+| Before adding a node      | 95%                | 5,000                                              |
+| After, mod-N              | about 19%          | about 81,000                                       |
+| After, consistent hashing | about 76%          | about 24,000                                       |
+
+> **Key idea:** with mod-N the fraction that moves is N/(N+1), so bigger clusters suffer more. A ring moves only about 1/(N+1), all of it to the new node.
+
 ## 4. Consistent hashing
 
 Consistent hashing was introduced in a 1997 paper by Karger and colleagues at MIT, motivated by exactly this web-caching problem. The idea is to stop tying the owner to `N` and instead tie it to _positions on a circle_.
@@ -118,6 +136,18 @@ Redo the earlier database arithmetic. A 20% movement with a 95% hit ratio means 
 
 With only one point per node, the arcs between nodes are random. If you throw N points at random on a circle, the largest arc is about `ln(N)/N` of the circle, not `1/N`. For N = 10, `ln 10 = 2.3`, so the biggest arc is typically around 23% of the circle against a fair share of 10%, more than twice the average. That node holds more than twice its fair share of keys and receives more than twice the traffic, and may run out of memory first. Removing a node also dumps its entire arc onto a single neighbour, doubling that neighbour's load, which can cascade.
 
+Why one point per node is dangerous when a node leaves:
+
+```mermaid
+flowchart LR
+  subgraph One["1 point per node"]
+    X1[Node C removed] -->|whole arc| Y1[Neighbour A: load doubles]
+  end
+  subgraph Many["Many vnodes per node"]
+    X2[Node C removed] -->|small arcs| Y2[Each of 9 survivors: about +11%]
+  end
+```
+
 ### 4.4 Virtual nodes
 
 The standard fix is to give each physical node many points on the ring, called virtual nodes or vnodes. A node hashes `"cache-3:11211#0"`, `"cache-3:11211#1"`, and so on, up to V points. The ring now has `N*V` points, and a node owns the union of many small arcs.
@@ -130,6 +160,18 @@ Two benefits follow:
 Vnodes also let you weight heterogeneous machines: a node with twice the RAM gets twice as many vnodes.
 
 The costs are memory for the ring (N*V entries, kept sorted, looked up by binary search in O(log(N*V))) and slower ring construction. With N = 50 and V = 200 that is only 10,000 entries, trivial. The well known Memcached client convention called ketama uses this approach (many points per server, derived from an MD5-based hash). Treat ketama as one popular implementation of the idea; compatibility between clients depends on using the same point-derivation recipe, which is why mixed-language fleets sometimes disagree on key placement.
+
+Balance improves roughly as 1/sqrt(V) (relative spread of a node's load):
+
+```mermaid
+xychart-beta
+  title "Load spread vs vnodes per node (%)"
+  x-axis ["V = 100", "V = 1000"]
+  y-axis "relative spread %" 0 --> 12
+  bar [10, 3]
+```
+
+With a single point per node (V = 1) the spread is far worse: for N = 10 the largest arc is about 23% of the ring against a fair share of 10%.
 
 ### 4.5 A compact implementation
 
@@ -199,6 +241,27 @@ Properties compared with the ring:
 
 A worked example with three nodes and invented scores: key `k1` scores A=0.31, B=0.92, C=0.55, so B owns it, with C as the first replica. If B dies, `k1` goes to C. Keys that had A or C as winner are untouched.
 
+Rendezvous hashing on the three-node example (scores are invented):
+
+```mermaid
+flowchart LR
+  K["key k1"] --> SA["A scores 0.31"]
+  K --> SB["B scores 0.92"]
+  K --> SC["C scores 0.55"]
+  SB --> W["Owner: B (highest)"]
+  SC --> R["First replica: C"]
+  W -. "B dies" .-> F["New owner: C"]
+```
+
+The four schemes compared:
+
+| Scheme           | Keys moved on +1 node     | Lookup cost     | State to share |
+| ---------------- | ------------------------- | --------------- | -------------- |
+| mod-N            | N/(N+1)                   | O(1)            | node list      |
+| Ring with vnodes | about 1/(N+1)             | O(log(N*V))     | sorted ring    |
+| Rendezvous       | about 1/(N+1)             | O(N)            | node list      |
+| Hash slots       | about 1/(N+1), controlled | O(1) plus table | slot table     |
+
 ## 6. Hash slots: a fixed intermediate layer
 
 A third approach inserts a level of indirection. Choose a fixed number of logical partitions, `S` slots (Redis Cluster uses 16384), and compute `slot = hash(key) mod S`. Then keep an explicit table mapping each slot to a node. The mod-S step never changes, so keys never move between slots. Rebalancing means reassigning whole slots from one node to another, and this can be done a few slots at a time, copying their data, with the table updated at the end.
@@ -206,6 +269,24 @@ A third approach inserts a level of indirection. Choose a fixed number of logica
 The advantage is control. You decide exactly which slots move and when, can throttle migration, and can resize in small steps. The disadvantage is that the slot table is state that must be distributed consistently; clients need to learn it and learn about changes. We cover this in detail in the Redis lesson.
 
 Numerically, with 16384 slots on 4 nodes each node owns 4096 slots. Adding a fifth node means the new node should own `16384/5 = 3276.8`, about 3277 slots, taken evenly from the four existing nodes: each gives up about 205 slots (`4096 - 3277 = 819` total moved from 4 donors, about 205 each). The fraction of keys that moves is 3277/16384, about 20%, matching the consistent hashing minimum.
+
+Hash slots add a layer of indirection, so keys never change slot, only slots change node:
+
+```mermaid
+flowchart LR
+  K[key] --> H["CRC16(key) mod 16384"]
+  H --> S[Slot 9189]
+  S --> T[Slot table]
+  T --> N[Node B]
+```
+
+Adding a fifth node to four nodes of 4,096 slots each:
+
+|                          | Slots per node | Change                                    |
+| ------------------------ | -------------- | ----------------------------------------- |
+| Before (4 nodes)         | 4,096          | none                                      |
+| After (5 nodes)          | about 3,277    | new node takes 3,277 slots                |
+| Donated by each old node | about 205      | 4,096 - 3,277 = 819 total, about 205 each |
 
 ## 7. Where does routing run? Three architectures
 
@@ -242,6 +323,28 @@ Many large deployments combine them: a client talks to a local or regional proxy
 Sharding makes operations that touch several keys harder. A `MGET` of 100 keys scattered over 20 nodes becomes up to 20 parallel requests, and your latency is that of the slowest (tail latency amplification). A transaction or Lua script touching two keys on different nodes cannot be atomic across nodes. Redis Cluster addresses this by letting you force related keys into one slot with a _hash tag_: only the substring inside `{...}` is hashed, so `{user:42}:profile` and `{user:42}:cart` land together. The price is that you have deliberately created a bigger unit that cannot be split. A tag that groups all of a huge tenant's keys creates a hot shard.
 
 Sharding spreads _keys_, not _load_. If one key receives 30% of traffic, whichever node owns it carries at least 30% of the cluster's requests no matter how many nodes you add. Remedies, covered in the hot key chapter, include replicating that key across several nodes (read from a random replica), adding a small in-process cache in front, and splitting the key into suffixed copies (`key#0` to `key#7`) chosen randomly on read. Remember that consistent hashing balances the number of keys, not the heat of keys.
+
+A scatter-gather `MGET` over a sharded cache pays the slowest node's latency:
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant N1 as Node 1
+  participant N2 as Node 2
+  participant N3 as Node 3
+  par scatter
+    C->>N1: MGET subset
+  and
+    C->>N2: MGET subset
+  and
+    C->>N3: MGET subset
+  end
+  N1-->>C: reply fast
+  N3-->>C: reply fast
+  N2-->>C: reply slow (sets total latency)
+```
+
+> **Key idea:** sharding spreads keys, not load. A key taking 30% of traffic keeps its owner at 30% or more of cluster requests, however many nodes you add.
 
 ## 9. Operational practice for resizing
 

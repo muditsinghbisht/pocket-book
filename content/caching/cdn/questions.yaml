@@ -20,3 +20,173 @@ questions:
     hints:
       - The "s" stands for shared.
       - Is a browser a shared cache or a private one?
+
+  - id: cdn-nocache-01
+    level: beginner
+    type: mcq
+    q: >-
+      What does the response header `Cache-Control: no-cache` tell a cache to
+      do?
+    options:
+      - Never store the response anywhere
+      - Store it only in the browser, not in shared caches
+      - Store it, but revalidate with the origin before every reuse
+      - Serve it for at most one second
+    answer: 2
+    explain: >-
+      `no-cache` allows storing but requires revalidation (for example with
+      `If-None-Match`) before each reuse, so a 304 can avoid re-sending the
+      body. The directive that forbids storing is `no-store`, and the one that
+      limits storage to the browser is `private`.
+    hints:
+      - The name is misleading. Which directive actually forbids storage?
+      - A 304 response is only possible if the cache kept a copy.
+
+  - id: cdn-swr-01
+    level: beginner
+    type: free
+    q: >-
+      A response has `Cache-Control: max-age=60, stale-while-revalidate=300`.
+      What happens to a request that arrives 100 seconds after the response
+      was stored, and what trade-off does the site accept?
+    answer: >-
+      The response is stale (past 60 s) but within the 300 s extra window, so
+      the cache serves it immediately and starts one background revalidation.
+      The user sees no wait, but may see data up to 360 s old in total.
+    explain: >-
+      `stale-while-revalidate` removes the latency spike at the staleness
+      boundary and replaces N waiting users with a single background refresh.
+      The cost is bounded extra staleness (max-age plus the window). After 360
+      seconds the cache must wait for a fresh response.
+
+  - id: cdn-age-01
+    level: intermediate
+    type: numeric
+    q: >-
+      An origin sends `Cache-Control: max-age=300`. The response reaches a CDN
+      edge with `Age: 120`, the edge holds it 100 more seconds, and then a
+      browser requests it. For how many more seconds may the browser reuse it
+      without contacting anyone?
+    answer: 80
+    tolerance: 0
+    unit: seconds
+    explain: >-
+      The browser receives `Age: 120 + 100 = 220`. Freshness is bounded by the
+      original lifetime, which counts age cumulatively across layers, so the
+      remaining freshness is 300 - 220 = 80 seconds. It is not 300 again.
+    hints:
+      - Age accumulates across every cache that held the response.
+      - Remaining freshness is max-age minus the current age.
+
+  - id: cdn-vary-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A product page is identical for all anonymous visitors, but the origin
+      sends `Vary: Cookie` on it. What is the effect on the CDN?
+    options:
+      - Each distinct cookie value gets its own cache entry, so hit ratio collapses
+      - The page is cached once and cookies are ignored
+      - The CDN refuses to forward the request to the origin
+      - Only logged-in users are affected, anonymous users share one entry
+    answer: 0
+    explain: >-
+      The cache key includes the values of the headers named in `Vary`. Almost
+      every user has a unique `Cookie` value, so entries are stored per user
+      and rarely reused. Fix it by stripping or ignoring cookies at the edge
+      for that path, or keying on a coarse flag such as logged in or not.
+    hints:
+      - How many distinct Cookie header values does a busy site see?
+      - The cache key includes the values of headers named in Vary.
+
+  - id: cdn-byte-offload-01
+    level: advanced
+    type: numeric
+    q: >-
+      In a month a CDN serves 4,000,000 requests for 50 KB objects at a 99%
+      hit ratio and 400,000 requests for 5 MB objects at an 80% hit ratio.
+      What is the byte offload, in percent (use 1 MB = 1000 KB)?
+    answer: 81.7
+    tolerance: 0.2
+    unit: "%"
+    explain: >-
+      Small objects total 4M x 50 KB = 200 GB, and 1% miss gives 2 GB at the
+      origin. Large objects total 400,000 x 5 MB = 2,000 GB, and 20% miss gives
+      400 GB. The origin serves 402 GB of 2,200 GB, so offload is
+      1 - 402/2200 = 81.7%, well below the 97.3% request hit ratio.
+    hints:
+      - Compute bytes served by the origin, not requests.
+      - Large objects dominate even though they are rare.
+
+  - id: cdn-deception-01
+    level: advanced
+    type: mcq
+    q: >-
+      A CDN rule caches every path ending in `.css` for an hour. The origin
+      ignores unknown trailing path segments, so `/account/profile/x.css`
+      returns the logged-in user's profile page. What is the vulnerability and
+      the best fix?
+    options:
+      - "Cache poisoning; add `Vary: User-Agent`"
+      - Cache deception; decide cacheability from the origin's headers and return 404 for unknown suffixes
+      - Cache stampede; enable request collapsing
+      - TTL misconfiguration; shorten the TTL to one minute
+    answer: 1
+    explain: >-
+      The cache and origin disagree about what the URL means, and the cache
+      decides storability by file extension. An attacker lures a victim to the
+      URL, the private page is stored as public, and the attacker fetches it.
+      Respect `private` and `no-store` from the origin, reject unknown path
+      suffixes, and do not override origin headers by extension on routes that
+      reach dynamic handlers.
+    hints:
+      - Who stores the private page, and on what basis?
+      - Poisoning stores a harmful response; deception stores a private one.
+
+  - id: cdn-purge-shield-01
+    level: staff
+    type: mcq
+    q: >-
+      You purge a URL at all edge PoPs, but users keep receiving the old
+      version minutes later even though the origin is updated. The CDN uses a
+      shield tier and the origin sends `Cache-Control: max-age=3600`. What is
+      the most likely cause?
+    options:
+      - The shield still holds the old object, so purged edges refill from it
+      - Edges ignore purge requests for objects with a long max-age
+      - The browser cache was purged first and refetched stale data
+      - Request collapsing is disabled
+    answer: 0
+    explain: >-
+      A purge must clear every tier. If edges are purged while the shield holds
+      the old copy, the next edge miss refetches the stale object and it lives
+      on for a full TTL. Purge shield and edges (or use a provider that does it
+      in order), and update the origin before purging so a gap request cannot
+      re-cache old content.
+    hints:
+      - Where does an edge miss go first?
+      - Is the shield part of the purge?
+
+  - id: cdn-origin-load-01
+    level: staff
+    type: mcq
+    q: >-
+      A site with 30,000 req/s and a 97% hit ratio has an origin built for
+      2,000 req/s. A teammate proposes a global hard purge on every deploy.
+      Which alternative best protects the origin?
+    options:
+      - Lower the TTL to 10 seconds so the purge is unnecessary
+      - Disable the CDN during deploys
+      - "Add `Vary: User-Agent` so each device refills separately"
+      - Version asset URLs, soft purge the few HTML entry points, and use a shield with request collapsing
+    answer: 3
+    explain: >-
+      A hard purge-all turns up to all 30,000 req/s into misses against an
+      origin sized for about 900 req/s of normal misses. Versioned URLs need no
+      purge, soft purge serves stale while refreshing once, and a shield with
+      collapsing turns per-PoP misses into one fetch per object. Shorter TTLs
+      raise steady-state origin load, and Vary on User-Agent fragments the
+      cache further.
+    hints:
+      - Normal miss load is 3% of 30,000 req/s.
+      - Which options avoid a miss spike altogether?
