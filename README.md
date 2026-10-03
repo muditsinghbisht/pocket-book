@@ -4,7 +4,6 @@ A client-only, book-style web app for learning software engineering. Topics are 
 
 No backend. No login. No progress tracking.
 
-
 ## Features
 
 - **Lessons**: deep, book-style chapters with diagrams.
