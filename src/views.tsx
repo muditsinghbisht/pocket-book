@@ -1,9 +1,11 @@
-// Node and section views. The quiz player lives in Quiz.tsx; flashcard and notes features come in later milestones.
+// Node and section views. The quiz player lives in Quiz.tsx; flashcards and notes live in Flashcards.tsx and Notes.tsx.
 import type { CSSProperties, ReactNode } from "react";
 import { isQuizQuestion, type Level, type Section } from "./content/model.ts";
 import type { PracticeQuestion, TopicNode } from "./content/schema.ts";
+import { Flashcards } from "./Flashcards.tsx";
 import { Mdx } from "./Mdx.tsx";
 import { Quiz } from "./Quiz.tsx";
+import { Notes } from "./Notes.tsx";
 import { notFoundArt } from "./not-found-art.ts";
 import { link } from "./route.ts";
 
@@ -442,22 +444,7 @@ export function SectionView({
       return (
         <>
           {title}
-          {node.flashcards.length ? (
-            <dl className="grid gap-3 sm:grid-cols-2">
-              {node.flashcards.map((c) => (
-                <div
-                  key={c.front}
-                  style={tone("flashcards")}
-                  className="card border-l-4 border-l-tone p-4 break-inside-avoid"
-                >
-                  <dt className="font-semibold">{c.front}</dt>
-                  <dd className="mt-2 text-muted">{c.back}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <Empty />
-          )}
+          <Flashcards node={node} />
         </>
       );
     case "cheatsheet":
@@ -490,7 +477,7 @@ export function SectionView({
       return (
         <>
           {title}
-          <Empty>Notes come in a later milestone.</Empty>
+          <Notes node={node} />
         </>
       );
   }

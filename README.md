@@ -19,7 +19,7 @@ No backend. No login. No progress tracking.
 
 ## Data and persistence
 
-Notes and custom flashcards are stored in the browser's IndexedDB. Nothing leaves your machine. Use export and import to move or back up your data.
+Notes and custom flashcards are stored in the browser's IndexedDB. Nothing leaves your machine. Use export and import (JSON or Markdown, on the Notes and Flashcards pages) to move or back up your data. Importing never silently overwrites: if an imported note or card differs from yours, you choose whether to replace yours or keep them. If the browser blocks storage (for example in some private windows), the app says so instead of saving.
 
 The only other things kept in the browser are the theme choice (System, Light or Dark), a UI preference in `localStorage`, and the offline copy of the book in the service worker cache, which is replaced by each new version.
 
@@ -39,7 +39,7 @@ Status values: Not started, In progress, Done.
 
 ## Status
 
-Phase 1 in progress: scaffold done (Vite, React, TypeScript, Tailwind, Vitest). Content build pipeline done: YAML and Markdown/MDX in `content/` is validated with Zod at build time; lessons and case studies compile to lazily loaded MDX chunks with lazy Mermaid diagrams (format in `.claude/requirements.md`, schema in `src/content/schema.ts`). Navigation done: hybrid routing (a real `/<domain>/` page per domain, hash paths below it) and a responsive shell with a desktop sidebar, a mobile drawer and bottom section navigation. UI done: a sticky top bar (logo, domain links, theme toggle, drawer button on mobile), a semantic color system with per-section accents and level badges, and a light/dark theme (WCAG AA in both). Quiz player done: pick a scope (this topic and its subtopics, or the whole book) and a level, or a curated quiz; one question per screen with mcq, numeric and free answers, and a summary of the current run that is never saved. Next: notes and custom flashcards (IndexedDB, export/import) and swipeable flashcards.
+Phase 1 in progress: scaffold done (Vite, React, TypeScript, Tailwind, Vitest). Content build pipeline done: YAML and Markdown/MDX in `content/` is validated with Zod at build time; lessons and case studies compile to lazily loaded MDX chunks with lazy Mermaid diagrams (format in `.claude/requirements.md`, schema in `src/content/schema.ts`). Navigation done: hybrid routing (a real `/<domain>/` page per domain, hash paths below it) and a responsive shell with a desktop sidebar, a mobile drawer and bottom section navigation. UI done: a sticky top bar (logo, domain links, theme toggle, drawer button on mobile), a semantic color system with per-section accents and level badges, and a light/dark theme (WCAG AA in both). Notes and flashcards done: autosaved notes per topic and per section, a swipeable, tap-to-flip flashcard player with keyboard shortcuts, your own cards (add, edit, delete), JSON and Markdown export/import for both, and a printable deck. Quiz player done: pick a scope (this topic and its subtopics, or the whole book) and a level, or a curated quiz; one question per screen with mcq, numeric and free answers, and a summary of the current run that is never saved. Next: cheat-sheets and print views, and the Caching content in depth.
 
 Phase 2 in progress: the app item is done (installable PWA, offline via a build-generated service worker, update prompt). The LLM and agentic-systems content has not started.
 

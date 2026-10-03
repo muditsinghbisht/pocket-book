@@ -43,7 +43,7 @@ Implemented (navigation milestone) in `src/route.ts`, the only routing module:
 - Every link is relative (`#...` within a domain, `../<domain>/#...` across domains, `./<domain>/` from home) and Vite uses `base: "./"`, so the build works under any subpath.
 - `parseHash`, `toHash` and `href` are pure and unit tested; `useRoute` subscribes to `hashchange`.
 
-Shell: persistent sidebar tree at `md` and up; below `md`, a native `<dialog>` drawer (focus trap and Escape for free, closes on backdrop or link tap) and a fixed bottom navigation for the seven sections. The tree expands only the active node's ancestors. Section views are stubs except lessons, case studies, practice (hints, explanation and solutions behind tap-to-reveal `<details>`) and quizzes (the quiz player, see "Quizzes").
+Shell: persistent sidebar tree at `md` and up; below `md`, a native `<dialog>` drawer (focus trap and Escape for free, closes on backdrop or link tap) and a fixed bottom navigation for the seven sections. The tree expands only the active node's ancestors. Lessons, case studies, practice (hints, explanation and solutions behind tap-to-reveal `<details>`), quizzes (the quiz player, see "Quizzes"), flashcards and notes are implemented; the cheat-sheet view is still a stub.
 
 ## Responsive and mobile
 
@@ -150,6 +150,13 @@ Runtime constants (`levels`, `sections`, `quizTypes`, `isQuizQuestion`) live in 
 Derived quizzes (`src/content/quiz.ts`): `deriveQuiz(scope, level)` collects the quiz-type questions of a node and all its descendants (or the whole book, given the domain list) at exactly the chosen level, shuffled with Fisher-Yates on every call. Hand-curated quizzes are played by shuffling their resolved `questions`.
 
 Quiz player (`src/Quiz.tsx`, the `quizzes` section): choose a scope (the node and its descendants, or the whole book) and a level, or one of the node's curated quizzes. One question per screen at every width, next only. `mcq`: large option buttons, then the correct option and a wrong pick are marked with text and color, plus `explain`. `numeric`: graded by `gradeNumeric` in `src/content/quiz.ts` (absolute `tolerance`, accepts thousands separators and a trailing `unit`, rejects non-numbers). `free`: ungraded, reveals the model answer and `explain`. Optional hints are tap-to-reveal before answering. The end summary shows the score of the current run only (free answers excluded) and is never stored; Restart reshuffles. Focus moves to each new question heading, then to Next after answering, and the feedback is an `aria-live` status.
+
+### Notes and custom flashcards (implemented)
+
+- Storage: `src/db.ts` is the only IndexedDB module (native API, no `idb` dependency; database `pocketbook` v1, stores `notes` keyed by `key` and `cards` keyed by `id`). Every failure shows a "storage blocked" message instead of crashing.
+- Notes (`src/Notes.tsx`): one note per node (`key` = node path) and one per section of it (`key` = `<path>#<section>`), chosen with chips in the Notes view. Autosave after 500 ms, on blur, on leaving and when the tab is hidden. An empty note is deleted. A list links to every topic that has notes.
+- Flashcards (`src/Flashcards.tsx`): the ready-made deck followed by the user's own cards (`{ id, path, front, back }`). Tap to flip, swipe left/right (pointer events, `touch-action: pan-y`), Space/Enter to flip and arrow keys to move on desktop. Add, edit and delete own cards. "Print deck" prints every card front and back as a grid; the player and controls are hidden in print.
+- Export/import (`src/userdata.ts`, pure and unit tested; UI in `src/Transfer.tsx`): JSON `{ format: "pocketbook-notes" | "pocketbook-flashcards", version: 1, notes | cards }`, and Markdown, where each record is a `<!-- pb <id> [<path>] -->` marker, a readable heading (ignored on import) and the body (cards: `**Front**` / `**Back**`). Both formats round-trip exactly. Imports are validated; identical records are skipped, and if any differ from stored ones the user chooses replace or keep theirs.
 
 ## Visual design and theme
 
