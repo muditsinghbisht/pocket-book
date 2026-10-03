@@ -30,6 +30,24 @@ requests per second. Almost every failure in this chapter is a story about `R` r
 
 ## 2. The failure taxonomy
 
+The eight classes at a glance:
+
+```mermaid
+mindmap
+  root((Cache failure classes))
+    Overload
+      Stampede
+      Cold start
+      Hot key
+      Capacity cliff
+    Loops
+      Feedback loop
+      Metastable failure
+    Wrong data
+      Inconsistency
+      Poisoning
+```
+
 ### 2.1 Stampede (thundering herd, dogpile)
 
 _Mechanism._ Many requests for the same key miss at the same moment, and all of them go to the backing store to recompute the value. Typical triggers: a popular key expires; a key is deleted or invalidated; a cache node restarts; a deploy changes the key format. The backing store receives `N` identical, expensive requests instead of one.
@@ -48,6 +66,16 @@ _Mechanism._ A positive feedback loop: slowness causes behaviour that causes mor
 - _Failed fills._ A miss triggers a fill; the fill fails or is too slow; nothing is stored; the next request misses again. The cache stays empty exactly because the backend is overloaded, and the cache being empty keeps the backend overloaded.
 - _Retries multiply by tiers._ If each of three layers retries three times, one user request can become up to `3 * 3 * 3 = 27` backend attempts. In a request path with `d` layers each retrying `r` times, the worst-case amplification is `r^d`.
 
+Three layers that each make 3 attempts:
+
+```mermaid
+flowchart LR
+  U[1 user request] -->|"x3"| L1[Layer 1]
+  L1 -->|"x3 each"| L2[Layer 2]
+  L2 -->|"x3 each"| L3[Layer 3]
+  L3 --> B[("Backend sees 27 attempts")]
+```
+
 _Signature._ Request rate at the backend exceeds the user request rate; error rates climb together with the request rate; recovery does not occur when the original trigger disappears.
 
 _Defences._ Retry budgets and exponential backoff with jitter; retries at one layer only; circuit breakers that stop calls to a failing dependency; deadlines propagated down the call chain so that work for an already-abandoned request is cancelled; load shedding.
@@ -58,6 +86,14 @@ _Mechanism._ A cache is empty or nearly empty: after a restart, a flush, an evic
 
 _Arithmetic._ `R = 60,000` requests per second; `h = 0.97`, so `B = 1,800`. Database capacity `C = 5,000`. A cold cache sends `B = 60,000`: twelve times capacity. Even if the cache warms in a perfectly exponential fashion, the system is over capacity until `h` climbs above `1 - C/R = 1 - 5,000/60,000 = 0.917`. Warming is not instantaneous: it requires the backend to serve the misses that fill the cache, and the backend cannot serve them while overloaded, so the time to warm may become infinite. That is the doorway to a metastable state (Section 2.8).
 
+```mermaid
+xychart-beta
+  title "Backend load against capacity (requests/s)"
+  x-axis ["Warm cache, h 0.97","Capacity C","Cold cache, h 0"]
+  y-axis "requests per second" 0 --> 65000
+  bar [1800,5000,60000]
+```
+
 _Signature._ An abrupt drop in hit ratio coinciding with a deploy, restart, or flush; backend saturated; slow or absent recovery.
 
 _Defences._ Gradual traffic ramp-up; warming from a replica, a snapshot or a replayed sample of hot keys; replicas so a node loss does not cool the data; keeping the old cache and the new in dual-read mode during migrations; load shedding and rate-limited fills; never flushing a production cache as a casual fix.
@@ -67,6 +103,16 @@ _Defences._ Gradual traffic ramp-up; warming from a replica, a snapshot or a rep
 _Mechanism._ Sharding spreads keys evenly, not load. A single key or a small group of keys receives a large fraction of traffic (a viral item, a global configuration value, a celebrity's profile, a rate-limit counter). The node that owns it saturates in CPU or network while the rest of the cluster idles. Adding nodes does not help, since a key lives on one node.
 
 _Arithmetic._ A 12-node cluster handles 600,000 reads/s, 50,000 per node on average. One key attracts 20% of traffic: 120,000 reads/s. A node's capacity is 100,000/s. That node is over capacity by 20% plus its normal share of other keys, while the other 11 nodes run at about 40%: the cluster as a whole is at 50% utilisation and yet is failing. Average utilisation is the wrong metric.
+
+The 12-node example in numbers:
+
+```mermaid
+xychart-beta
+  title "Node load as percent of capacity"
+  x-axis ["Hot-key node","Each other node","Cluster average"]
+  y-axis "percent" 0 --> 180
+  bar [160,40,50]
+```
 
 _Signature._ One shard's CPU, network or latency is far above its peers; error rates cluster on that shard; adding capacity elsewhere does nothing. Failures can cascade: if the hot node falls over and its keys move to the next node (as in a hash ring), the hot key moves too and takes down the next node.
 
@@ -98,6 +144,16 @@ _Mechanism._ A system behaves well up to some load and then collapses sharply, r
 
 _Arithmetic._ Hit ratio as a function of cache size under skewed access can fall steeply near the point where the hot set exceeds memory. Suppose the hot set is 80 GB and the cache is 100 GB at a 98% hit ratio. Data growth of 30% takes the hot set to 104 GB; hit ratio might drop to 92%, tripling backend load, `B` from `0.02R` to `0.08R`, a factor of four. A 30% growth in data led to a 300% growth in backend load; the system was operating on the edge of a cliff and nobody knew.
 
+The 80 GB hot set example, before and after 30 percent growth:
+
+```mermaid
+xychart-beta
+  title "Backend load as percent of request rate"
+  x-axis ["Hot set 80 GB, h 0.98","Hot set 104 GB, h 0.92"]
+  y-axis "percent of R" 0 --> 10
+  bar [2,8]
+```
+
 _Signature._ A metric that has been flat for months suddenly bends sharply; the system "fell off a cliff" after a small change in data size, traffic or configuration.
 
 _Defences._ Headroom planning (not just average, but the distance to the cliff); load tests that push beyond expected peak to find the cliff; alerts on leading indicators (eviction rate, memory utilisation, pool saturation) rather than on the failure; autoscaling for stateless parts and pre-provisioning for stateful ones.
@@ -123,6 +179,18 @@ flowchart LR
   F -. "trigger gone but loop continues" .-> X[Stuck in overloaded state]
 ```
 
+The same story as states, showing why removing the trigger changes nothing:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Healthy
+  Healthy --> Degraded: trigger
+  Degraded --> Stuck: fills fail, retries add load
+  Stuck --> Stuck: trigger gone, loop continues
+  Stuck --> Recovering: shed load, disable retries
+  Recovering --> Healthy: cache warm, h above h_min
+```
+
 _Recovery._ Escape requires breaking the loop by **reducing load below the recovery threshold**, not by fixing the original cause: shed load aggressively (reject a fraction of requests at the edge), disable retries, route traffic gradually back as the cache refills, temporarily serve stale or degraded content, add backend capacity. Operators sometimes discover that the only way out is to shut off traffic completely, let the system drain, and reintroduce load in stages.
 
 _Signature._ Degraded state persisting long after the trigger; high retry and timeout rates; hit ratio stuck low; relief only when load is cut.
@@ -136,6 +204,8 @@ _Defences._ Design so that the system is stable _without_ the efficiency, or at 
 Architects commonly describe caches as an optimisation: they make the system faster and cheaper. But once a system has run behind a cache for long enough, its capacity planning, its traffic, its latency expectations and its team's habits all adapt to the cache. The backend is provisioned for `B = R(1 - h)`, not for `R`. At that moment the cache is no longer an optimisation: it is a **structural element**. The system will not stand without it, just as a building will not stand without its load-bearing walls, even if the walls were originally put up for a different reason.
 
 The honest question for any cached system is: _what is the true capacity of the backend, and what is the system's capacity if the cache disappears?_ The cache **hides** this number. In steady state, everything looks healthy: the backend is at 20% utilisation, plenty of headroom, and the capacity planning review is satisfied. The real headroom, the one that matters in an incident, is hidden behind the hit ratio.
+
+> **Key idea:** a cache with hit ratio h makes the backend carry R(1 - h), so the system is provisioned for the cached load. Its real capacity is hidden until the cache is gone.
 
 ### 3.2 Quantifying the hidden gap
 

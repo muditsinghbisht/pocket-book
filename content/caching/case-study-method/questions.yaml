@@ -64,3 +64,175 @@ questions:
     hints:
       - What does the client do when the database returns an error?
       - Why would the problem persist after the original cause is fixed?
+
+  - id: case-study-method-load-01
+    level: beginner
+    type: numeric
+    q: >-
+      A service receives 20,000 requests per second and its cache has a 95%
+      hit ratio. How many requests per second reach the database?
+    answer: 1000
+    tolerance: 0
+    unit: req/s
+    explain: >-
+      Backend load is B = R x (1 - h) = 20,000 x 0.05 = 1,000 requests per
+      second. Every failure class in the taxonomy is a story about R rising,
+      h falling, or B exceeding what the backend can serve.
+    hints:
+      - Only misses reach the database.
+      - Compute the miss ratio first.
+
+  - id: case-study-method-slack-mcrib-01
+    level: beginner
+    type: mcq
+    q: >-
+      In Slack's 2-22-22 incident, what did Mcrib do when Consul reported that
+      a cache node had left, even for a restart?
+    options:
+      - It removed the node and spread its keys over the others
+      - It paused all traffic until the node returned
+      - It replaced the node with a fresh, empty spare
+      - It copied the node's data to a backup first
+    answer: 2
+    explain: >-
+      The empty spare turned requests that would have been hits into misses
+      that went to Vitess. With 25% of the fleet restarted at once, a quarter
+      of the cache went cold together.
+
+  - id: case-study-method-lease-herd-01
+    level: intermediate
+    type: mcq
+    q: >-
+      In the Scaling Memcache paper's lease design, many clients miss on the
+      same popular key at once. The cache issues a lease token at most once
+      every 10 seconds per key. What happens to the other clients?
+    options:
+      - They are told to wait briefly and retry, since the value is usually refilled within milliseconds
+      - They each read the database but are not allowed to set the cache afterwards
+      - They receive an error and the key is deleted from the cache
+      - They all receive their own token and fill the key in parallel
+    answer: 0
+    explain: >-
+      Only the token holder goes to the database. Making the rest wait briefly
+      is cheaper than letting all of them hit the database. The same token
+      also lets a delete invalidate outstanding tokens, which rejects stale
+      sets.
+
+  - id: case-study-method-hotkey-nodes-01
+    level: intermediate
+    type: mcq
+    q: >-
+      One key receives 20% of all reads in a 12-node cache, and the node that
+      owns it is saturated while the others are at about 40% load. Why does
+      adding more nodes not fix this?
+    options:
+      - New nodes always start empty and lower the hit ratio
+      - Consistent hashing cannot be extended
+      - A key lives on exactly one node, so extra nodes do not share its load
+      - More nodes increase the number of retries
+    answer: 2
+    explain: >-
+      Sharding spreads keys, not load. Effective mitigations are a short-TTL
+      in-process cache for the key, replicating it under several suffixed key
+      names read at random, coalescing requests, or splitting counters.
+      Average utilisation (50% here) hides the failure.
+
+  - id: case-study-method-dependence-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A system has a 99.2% hit ratio. What is its cache dependence factor,
+      1 / (1 - h)?
+    answer: 125
+    tolerance: 1
+    unit: x
+    explain: >-
+      1 / (1 - 0.992) = 1 / 0.008 = 125. Without the cache the backend would
+      see 125 times its normal load, so the cache is a structural element of
+      the system, not an optimisation.
+    hints:
+      - What fraction of requests are misses?
+      - Compute the miss ratio, then invert it.
+
+  - id: case-study-method-hmin-01
+    level: advanced
+    type: numeric
+    q: >-
+      Peak traffic is 90,000 requests per second and the database can safely
+      serve 6,000 per second. What is the minimum survivable hit ratio, 1 -
+      C/R, rounded to three decimals?
+    answer: 0.933
+    tolerance: 0.002
+    explain: >-
+      C/R = 6,000 / 90,000 = 0.0667, so h_min = 1 - 0.0667 = 0.933. If the
+      normal hit ratio is 0.98, the margin is only about 4.7 points of hit
+      ratio, and any event that removes more than that overloads the database.
+    hints:
+      - What fraction of requests may miss?
+      - Compute C divided by R, then subtract from 1.
+
+  - id: case-study-method-meta-version-01
+    level: advanced
+    type: mcq
+    q: >-
+      A slow cache fill reply carrying v1 arrives after the invalidation for
+      v2 was already processed, and the cache stores v1 indefinitely. Which
+      mechanism guarantees an older value can never overwrite a newer one?
+    options:
+      - A shorter TTL on every cached entry, so stale values expire sooner
+      - Deleting the key a second time after a short delay
+      - Increasing the cache size so that fewer entries are evicted
+      - Version numbers with a conditional set that rejects older versions
+    answer: 3
+    explain: >-
+      Without versions, an old value arriving late looks the same as a fresh
+      one. A shorter TTL or a delayed second delete only narrows the window
+      heuristically. Versions or compare-and-set make the ordering explicit,
+      with TTL kept as a backstop.
+    hints:
+      - Which option does not depend on timing?
+      - Which option makes the order explicit rather than hoping for it?
+
+  - id: case-study-method-survive-01
+    level: staff
+    type: numeric
+    q: >-
+      Peak traffic is 50,000 requests per second, the hit ratio is 98% and the
+      database can safely serve 4,000 per second. Assuming keys are spread
+      uniformly, what fraction of the cache can be lost (becoming misses)
+      before the database is over capacity? Use f_max = (C/R - (1 - h)) / h,
+      rounded to four decimals.
+    answer: 0.0612
+    tolerance: 0.002
+    explain: >-
+      C/R = 4,000 / 50,000 = 0.08 and 1 - h = 0.02, so f_max = (0.08 - 0.02)
+      / 0.98 = 0.0612. Only about 6% of the cache can go cold, roughly one
+      node in sixteen, so losing a quarter of the fleet, as in Slack's
+      incident, is far beyond what this system survives.
+    hints:
+      - The new miss ratio after losing a fraction f is (1 - h) + f x h.
+      - Set that equal to C/R and solve for f.
+
+  - id: case-study-method-remediation-01
+    level: staff
+    type: free
+    q: >-
+      A postmortem for a synchronised-expiry outage lists one action item:
+      move the nightly job that sets the TTLs to a quieter hour. Critique it
+      and propose a remediation list that breaks the causal chain.
+    answer: >-
+      Moving the job only changes the trigger's timing. The latent conditions
+      stay: all keys share an expiry time, there is no request coalescing or
+      stale-while-revalidate, the database has no headroom for the cold load,
+      and nothing sheds load. A better list adds TTL jitter to remove the
+      synchronisation, single-flight or stale serving to remove the
+      amplifier, load shedding and a retry budget to break the sustainer,
+      alerts on hit ratio and database queue depth for detection, and a game
+      day to verify. Check each item against the counterfactual: would the
+      incident still occur without this link.
+    explain: >-
+      Look for the trigger, amplifier and sustainer vocabulary, and for
+      remediations that defeat a different future trigger too.
+    hints:
+      - Which link in the chain does moving the job break?
+      - What would happen if a cache flush expired the same keys?

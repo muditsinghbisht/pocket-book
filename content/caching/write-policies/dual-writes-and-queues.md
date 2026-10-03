@@ -48,6 +48,8 @@ sequenceDiagram
 
 The root cause is that "update two systems" is not atomic, and retries do not fix reordering. Distributed-systems theory proves that atomic commit across independent systems needs a coordination protocol (such as two-phase commit), which is usually unavailable between a database and a cache, and has its own availability costs when available.
 
+> **Key idea:** retries fix lost steps but not reordering, and a dual write has no way to detect either. The fix is to stop depending on two separate writes landing in the right order.
+
 ### Worked example: how often does it happen?
 
 Suppose a service performs 1,000 writes per second, and the probability that a write's cache update fails or is reordered is 0.0001 (one in ten thousand), a very reliable system. That is 0.1 inconsistencies per second, 8,640 per day, each lasting until the TTL expires or the key is next written. With a 1-hour TTL and uniform distribution, at any moment the system carries on the order of 0.1 x 3,600 = 360 stale keys. "Rare" at the request level is routine at scale. This is why the design must tolerate, detect or repair inconsistencies rather than merely hope they do not occur.
@@ -82,6 +84,12 @@ An alternative that removes the application-level outbox table is **CDC**: a too
 
 Both approaches shift the guarantee from "we hope both writes happen" to "the change is durably recorded once, and propagation is retried until it succeeds." That is the essence of **eventual consistency by design**.
 
+| Strategy             | What it guarantees                      | Cost or caveat                                         |
+| -------------------- | --------------------------------------- | ------------------------------------------------------ |
+| Invalidate and TTL   | Staleness bounded by the TTL            | An invalidation can still be lost; refill race remains |
+| Transactional outbox | No lost events, delivered at least once | A relay process; consumers must be idempotent          |
+| CDC                  | Commit-ordered changes from any writer  | Pipeline to run, replication lag, schema changes       |
+
 ## 4. Ordering
 
 Reliable delivery is not enough: events must also be applied in a sensible order.
@@ -104,6 +112,20 @@ boolean applyUpdate(String key, Value v, long version) {
 ```
 
 With this rule, delivering an event twice (duplicate), or events out of order, is harmless: the older one is simply ignored. Clock-based versions (wall-clock timestamps) are dangerous when several servers generate them because of clock skew; prefer database-assigned versions or log positions.
+
+A versioned apply ignores both a late older event and a duplicate:
+
+```mermaid
+sequenceDiagram
+  participant Q as Queue
+  participant C as Cache applier
+  Q->>C: set price 20, version 9
+  Note over C: stored version is 9
+  Q->>C: set price 10, version 8 (late)
+  C-->>Q: ignored, not newer than 9
+  Q->>C: set price 20, version 9 (duplicate)
+  C-->>Q: ignored, not newer than 9
+```
 
 **Deletes vs sets.** If invalidation is expressed as "delete the key", reordering is safe, since delete is idempotent and the reader will reload the current state from the database. Update-style messages ("set price to 20") need versions. This is another reason to prefer invalidation messages over value-carrying messages when the cached value is cheap to reload.
 
@@ -135,9 +157,33 @@ This only provides exactly-once effects when the side effect and the dedup recor
 
 **Idempotency for client retries.** The same logic applies at the API edge: if a mobile client retries a "create payment" request after a timeout, the server should recognize the repeated idempotency key and return the original result rather than creating a second payment. This is the pattern used by payment APIs.
 
+Why a lost acknowledgement produces a redelivery, and how the processed table absorbs it:
+
+```mermaid
+sequenceDiagram
+  participant B as Broker
+  participant C as Consumer
+  participant S as Store with processed table
+  B->>C: event e-17
+  C->>S: apply and record e-17 in one transaction
+  C--xB: ack lost
+  B->>C: redeliver e-17
+  C->>S: check processed table
+  S-->>C: e-17 already processed
+  C-->>B: ack, no second effect
+```
+
 ### Worked example: at-least-once with a counter
 
 A consumer receives `Increment(videoId, 1)` events and updates a cached counter and a database counter. If the broker redelivers 2 percent of events, then after 1,000,000 events about 20,000 are double counted: the counter is 2 percent high. Convert to idempotent form: carry `eventId` and keep a processed set, or switch to state-based events ("count is now N, version V") that can be re-applied safely. For approximate metrics, 2 percent error may be acceptable; for billing, it is not.
+
+With 2 percent redelivery, the effect on the 1,000,000-event counter:
+
+```mermaid
+pie showData title Events with 2 percent redelivery
+  "Counted once" : 980000
+  "Double counted" : 20000
+```
 
 ## 6. Queue-based patterns for caching
 
@@ -166,6 +212,15 @@ flowchart TD
   D --> H[Alert + manual or automated replay]
 ```
 
+Where the staleness comes from, stage by stage (alert on each stage, not only the total):
+
+```mermaid
+flowchart LR
+  A[Commit] -->|"publish delay"| B[Queue]
+  B -->|"queue wait, shown as consumer lag"| C[Consumer]
+  C -->|"processing time"| D[Cache updated]
+```
+
 ## 7. Reconciliation: trust but verify
 
 No matter how careful the pipeline, bugs and operational accidents happen (a consumer was down for a day, a deploy skipped a code path, someone updated the database by hand). Mature systems add a periodic **reconciliation** (anti-entropy) job that samples or scans keys, compares the cache (or index) against the source of truth, and repairs differences, emitting a metric for the **inconsistency rate**. A cheap variant: when reading from the cache, occasionally (say 0.1 percent of the time) also read the database and compare, logging mismatches. The measured rate tells you whether your invalidation strategy actually works, and trends reveal regressions.
@@ -175,6 +230,13 @@ A layered defence is common:
 1. **TTL** bounds the worst case.
 2. **Event-driven invalidation** (outbox/CDC) delivers fast freshness in the common case.
 3. **Reconciliation** repairs what both missed and measures the system's real consistency.
+
+```mermaid
+flowchart LR
+  E["Change committed"] --> I["Event-driven invalidation, seconds"]
+  I -->|"event lost"| T["TTL expires, bounded staleness"]
+  I -->|"systematic bug"| R["Reconciliation repairs and measures"]
+```
 
 ## 8. Sagas and cross-service writes (brief)
 

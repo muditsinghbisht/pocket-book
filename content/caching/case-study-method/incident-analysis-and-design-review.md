@@ -28,6 +28,13 @@ A good postmortem is a piece of causal reasoning. A bad one is a story with a vi
 
 **Pass 3: what changed.** Read the remediation items. For each, ask: which link in the chain does this break? A remediation that only fixes the trigger ("add a check so this deploy cannot be released again") leaves the amplifier; a remediation that adds a circuit breaker, a retry budget or a warm path breaks a link that would defeat future triggers too. Count how many remediation items address triggers, amplifiers, sustainers, detection and recovery. A healthy list covers several.
 
+```mermaid
+flowchart LR
+  P1["Pass 1: facts and timeline"] --> P2["Pass 2: causal chain"]
+  P2 --> P3["Pass 3: does each fix break a link?"]
+  P3 -.->|"gaps found"| P2
+```
+
 Some further habits of a careful reader:
 
 - **Be wary of hindsight.** The people involved did not know what you now know. Ask what information was available at each decision and whether the dashboards would have shown it. Postmortems that ask "why did the system allow this?" teach more than ones that ask "who did this?".
@@ -59,6 +66,18 @@ One paragraph: what users experienced, for how long, how many were affected, and
 ### 2.2 Timeline
 
 Times, in order, each tagged _trigger_, _symptom_, _detection_, _action_, _recovery_. Include the delay between each stage: time to detect (TTD), time to mitigate (TTM), time to full recovery. These delays are often more instructive than the cause. An incident whose cause was quick to fix but took forty minutes to notice points at monitoring; one whose mitigation took hours because the system would not recover points at a sustainer (a metastable state).
+
+The five tags for timeline entries, in order (the gaps between them give time to detect and time to mitigate):
+
+```mermaid
+timeline
+  title Tags for each timeline entry
+  Trigger : the first event
+  Symptom : users or graphs show impact
+  Detection : alert or report, ends time to detect
+  Action : mitigation, ends time to mitigate
+  Recovery : full recovery
+```
 
 ### 2.3 System and quantities
 
@@ -117,7 +136,27 @@ Apply the template.
 - _Taxonomy._ Stampede (synchronised expiry), cold start, feedback loop, metastable risk.
 - _Remediation that breaks the chain._ TTL jitter (removes the synchronisation); coalescing and stale-while-revalidate (removes the amplifier); load shedding and a retry budget (breaks the sustainer); alerts on hit ratio and on database queue depth (detection). Remediation that only addresses the trigger: "move the job to 03:00".
 
+```mermaid
+flowchart TD
+  L["Latent: same TTL, no coalescing, little headroom"] --> T["Trigger: all keys expire at 02:00"]
+  T --> A["Amplifier: hit ratio 0.97 falls to about 0.29"]
+  A --> B["Backend about 35,500/s against capacity 6,000/s"]
+  B --> S["Sustainer: timeouts, retries, failed fills"]
+  S --> O["25 minute outage"]
+  J["TTL jitter"] -.->|"breaks"| T
+  C["Coalescing, stale serving"] -.->|"breaks"| A
+  H["Load shedding, retry budget"] -.->|"breaks"| S
+```
+
 Notice how the analysis turned a one-line cause into five distinct improvements and exposed a weak fix.
+
+| Remediation for the 02:00 example            | Link it breaks                                         |
+| -------------------------------------------- | ------------------------------------------------------ |
+| TTL jitter                                   | The synchronisation that lets all keys expire together |
+| Coalescing, stale-while-revalidate           | The amplifier                                          |
+| Load shedding, retry budget                  | The sustainer                                          |
+| Alerts on hit ratio and database queue depth | Detection                                              |
+| Move the job to 03:00                        | The trigger only                                       |
 
 ## 3. Checking the numbers
 
@@ -133,7 +172,25 @@ Quantitative plausibility checks catch errors in your reading and in the reports
 
 **Queueing.** Latency rises sharply as utilisation approaches 1. For a simple queue the mean wait scales like `1/(1 - ρ)`: at 50% utilisation the factor is 2, at 90% it is 10, at 99% it is 100. This is why a backend at "90% of capacity" is already in trouble: the latency tail is long and any extra load tips it over.
 
+```mermaid
+xychart-beta
+  title "Mean wait factor 1 / (1 - utilisation)"
+  x-axis ["50 percent","90 percent","99 percent"]
+  y-axis "times the idle wait" 0 --> 100
+  bar [2,10,100]
+```
+
 **Little's law.** The average number of requests in the system equals arrival rate times average time in system: `L = λ W`. If a database call that normally takes 5 ms starts taking 500 ms at 2,000 calls/s, the number of in-flight calls rises from `2,000 * 0.005 = 10` to `2,000 * 0.5 = 1,000`, which will exceed a connection pool of, say, 200, queuing the rest. This quick calculation explains many "pool exhausted" incidents: slowness converts directly into concurrency, and concurrency into exhaustion.
+
+Little's law example, in-flight calls against the pool:
+
+```mermaid
+xychart-beta
+  title "In-flight database calls at 2,000 calls/s"
+  x-axis ["Normal, 5 ms","Slow, 500 ms","Pool size"]
+  y-axis "calls" 0 --> 1100
+  bar [10,1000,200]
+```
 
 ## 4. A design review checklist for caching
 

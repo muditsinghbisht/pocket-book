@@ -93,6 +93,8 @@ A video site increments a view counter for a popular video 5,000 times per secon
 - Write-through: 5,000 database writes per second to the same row. Contention and load are severe.
 - Write-back with flush every 5 seconds: the cache accumulates 5 x 5,000 = 25,000 increments, then issues a single `UPDATE views = views + 25000`. Database writes: 0.2 per second for that key, a reduction of 25,000x for 5 seconds of exposure. The cost: if the cache node crashes, up to 5 seconds of increments (25,000 views) are lost. For a view counter that is likely acceptable; for account balances it never is.
 
+> **Key idea:** write-back turns many writes into one, so the store sees a fraction of the traffic. The price is that the cache holds the only copy of everything written since the last flush.
+
 ## 4. Write-around
 
 **Definition.** Writes go directly to the backing store and bypass the cache. The cache is populated only on reads (a read miss loads the entry). In the hardware vocabulary this corresponds to **no-write-allocate**.
@@ -102,6 +104,23 @@ A video site increments a view counter for a popular video 5,000 times per secon
 - **Write latency**: the store's latency, same as write-through.
 - **Cache pollution avoided**: data written but never read does not occupy the cache. Valuable for write-once, read-rarely data such as logs, bulk imports and archives.
 - **Read-after-write**: the first read after a write misses (the entry is absent), unless an older version is cached, in which case that version is **stale** and must be invalidated or overwritten. This is the main catch: write-around alone does not update or remove cached copies. It is almost always paired with invalidation (delete the key on write), which is precisely the cache-aside pattern described in the next lesson.
+
+The write path and the later read path of write-around, with the invalidation that keeps it correct:
+
+```mermaid
+sequenceDiagram
+  participant A as Application
+  participant C as Cache
+  participant D as Database
+  A->>D: write(k, v2)
+  A->>C: delete(k)
+  Note over C: no stale copy left
+  A->>C: read(k)
+  C-->>A: miss
+  A->>D: read(k)
+  D-->>A: v2
+  A->>C: set(k, v2)
+```
 
 **When it fits.** Workloads with many writes and few reads of the written data, bulk loads, and cases where freshly written data is unlikely to be read immediately.
 
@@ -138,6 +157,16 @@ flowchart LR
 
 Writes arrive at 2,000 per second on average, with a peak of 10,000 per second for 30 seconds. The database sustains 4,000 writes per second. During the peak, the backlog grows at 10,000 - 4,000 = 6,000 per second, so after 30 seconds it holds 180,000 pending writes. After the peak the queue drains at 4,000 - 2,000 = 2,000 per second net, which takes 180,000 / 2,000 = 90 seconds. If each entry is 1 KB, the queue needs about 180 MB, and the system exposes up to ~120 seconds of lag where the database lags the cache. With coalescing at 50 percent (many updates hit the same key), the effective peak load becomes 5,000 per second, backlog growth 1,000 per second, a 30,000-entry queue, and drain in 15 seconds. This shows why write-behind absorbs bursts: it converts peak load into a smooth, bounded delay, provided the average rate is below the store's capacity.
 
+The burst from the queue sizing example, as a backlog over time (the burst lasts the first 30 seconds, then the queue drains at 2,000 per second):
+
+```mermaid
+xychart-beta
+  title "Write-behind backlog (pending writes)"
+  x-axis ["0 s","30 s","60 s","90 s","120 s"]
+  y-axis "pending writes" 0 --> 200000
+  line [0,180000,120000,60000,0]
+```
+
 ## 6. Comparing the four
 
 | Policy        | Write latency        | Durability on ack                 | Store write load    | Read-after-write from cache | Typical risk                          |
@@ -149,6 +178,23 @@ Writes arrive at 2,000 per second on average, with a peak of 10,000 per second f
 
 Notice the pattern: you can buy low write latency and lower store load only by giving up durability and strong consistency, unless you replace the cache's weak durability with replication or a durable log. This is a specific instance of the more general trade-off between latency, durability and consistency that distributed systems theory keeps rediscovering.
 
+Placing the four policies by what they give up (qualitative, following the table above):
+
+```mermaid
+quadrantChart
+  title Write policies: speed against durability
+  x-axis Weak durability on ack --> Strong durability on ack
+  y-axis Slow writes --> Fast writes
+  quadrant-1 Fast and durable
+  quadrant-2 Fast but risky
+  quadrant-3 Slow and risky
+  quadrant-4 Slow but durable
+  Write-back: [0.15, 0.9]
+  Write-behind: [0.4, 0.85]
+  Write-through: [0.9, 0.15]
+  Write-around: [0.85, 0.25]
+```
+
 ### A decision procedure
 
 1. **Can the data be lost or approximated?** (counters, telemetry, positions). If yes, write-back or write-behind with bounded flush intervals.
@@ -156,6 +202,17 @@ Notice the pattern: you can buy low write latency and lower store load only by g
 3. **Will written data be read soon?** If yes, prefer policies that leave it in the cache (write-through, write-back). If rarely, write-around.
 4. **Does anything else read the backing store directly?** If yes, write-back and write-behind produce stale views for those readers; either route them through the cache or accept lag.
 5. **Is the store the bottleneck on writes?** If yes, coalescing (write-back/behind) is the lever.
+
+The first three questions of the procedure as a flow (questions 4 and 5 then adjust the answer):
+
+```mermaid
+flowchart TD
+  Q1{"Can data be lost or approximated?"}
+  Q1 -->|yes| WB["Write-back or write-behind, bounded flush"]
+  Q1 -->|no| Q2{"Read soon after the write?"}
+  Q2 -->|yes| WT["Write-through"]
+  Q2 -->|no| WA["Write-around plus invalidation"]
+```
 
 ## 7. Write-allocate and the cost of a write miss
 
@@ -170,6 +227,18 @@ When a write targets a key not currently cached, the cache can **write-allocate*
 **Partial failure ordering (write-through).** If the cache is updated first and the store write then fails, the cache holds a value that was never persisted: readers see a value that disappears later. Safer ordering: write the store first, then update the cache; if the cache update fails, delete the key or accept staleness bounded by TTL. This is the heart of the dual-write problem covered in the third lesson of this chapter.
 
 **Lost update from out-of-order flushes.** Two writes to key K from different application servers: W1 (value 1) at time t1 and W2 (value 2) at time t2 > t1. If the write-behind queue processes them out of order, the store ends up with 1 although 2 was the last write. Use per-key sequence numbers or version stamps and conditional updates (`UPDATE ... WHERE version < ?`) so that stale writes are rejected.
+
+With a version column, the late write is rejected instead of overwriting the newer one:
+
+```mermaid
+sequenceDiagram
+  participant Q as Write-behind queue
+  participant D as Database
+  Q->>D: set K = 2, version 2
+  D-->>Q: applied
+  Q->>D: set K = 1, version 1 (late)
+  D-->>Q: rejected, version is not newer
+```
 
 **Read from store while data is dirty in the cache.** A background job computes a report from the database while the cache has unflushed changes: the report omits them. Either flush before critical reads or route reports through the cache.
 

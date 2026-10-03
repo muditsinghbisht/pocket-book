@@ -62,3 +62,187 @@ questions:
     hints:
       - What does it cost if the last few seconds of writes disappear?
       - Which of these is read far more than written, and which is the reverse?
+
+  - id: write-policies-through-01
+    level: beginner
+    type: mcq
+    q: >-
+      In a write-through cache, when is a write acknowledged to the caller?
+    options:
+      - Immediately after the cache stores it, before the database is touched
+      - After a background timer flushes it to the database
+      - Only after both the cache and the backing store have the new value
+      - Only after the next read of that key
+    answer: 2
+    explain: >-
+      Write-through writes the backing store synchronously and acknowledges
+      only when both copies are updated. That makes it as durable as the
+      store, and as slow on writes as having no cache. Acknowledging
+      immediately describes write-back.
+
+  - id: write-policies-dirty-01
+    level: beginner
+    type: mcq
+    q: >-
+      In a write-back cache, what does it mean for an entry to be "dirty"?
+    options:
+      - The entry has been written in the cache but not yet flushed to the backing store
+      - The entry has expired and must be reloaded
+      - The entry was loaded from a stale replica
+      - The entry is larger than the average entry size
+    answer: 0
+    explain: >-
+      A dirty entry holds a newer value than the backing store. Until it is
+      flushed, a cache crash loses it, and evicting it forces a flush first.
+      The dirty ratio is therefore an operational metric next to hit ratio.
+
+  - id: write-policies-coalesce-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A counter for one key is incremented 8,000 times per second. A
+      write-back cache coalesces the increments and flushes them every 4
+      seconds. If the cache node crashes just before a flush, how many
+      increments are lost at most?
+    answer: 32000
+    tolerance: 0
+    explain: >-
+      Between flushes the cache accumulates 8,000 x 4 = 32,000 increments,
+      all of which exist only in the cache. The flush rate for that key is
+      one database write per 4 seconds (0.25 per second) instead of 8,000 per
+      second, in exchange for up to 32,000 lost increments.
+    hints:
+      - How long can increments sit unflushed?
+      - Multiply the rate by that window.
+
+  - id: write-policies-around-stale-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A service uses write-around: updates go only to the database, and reads
+      fill the cache. A key was cached an hour ago and the row has just been
+      updated. With no invalidation and a 6-hour TTL, what do readers see?
+    options:
+      - The new value, because the next read always misses
+      - An error, because the cache and database disagree
+      - The new value, because the cache refreshes itself on database writes
+      - The old cached value until the key is invalidated or expires
+    answer: 3
+    explain: >-
+      Write-around does not touch the cache on writes, so an existing cached
+      copy keeps being served. That is why write-around is almost always
+      paired with deleting the key on write, which is the cache-aside
+      pattern.
+
+  - id: write-policies-lag-01
+    level: intermediate
+    type: mcq
+    q: >-
+      Cache invalidations flow through a durable queue to the cache servers.
+      Which single metric best tells you how stale the cache can currently
+      be?
+    options:
+      - The cache hit ratio over the last hour
+      - Consumer lag, the age of the oldest unprocessed message
+      - Memory usage on each cache node
+      - The total number of keys held in the cache
+    answer: 1
+    explain: >-
+      Derived data is behind the source by roughly commit-to-publish delay
+      plus queue wait plus processing time, and consumer lag measures the
+      queue part directly. Hit ratio and memory say nothing about freshness.
+    hints:
+      - Which number grows when consumers fall behind?
+      - Staleness is the sum of several stages; which one can you measure directly on the queue?
+
+  - id: write-policies-backlog-01
+    level: advanced
+    type: numeric
+    q: >-
+      A write-behind queue sees an average of 1,500 writes per second. A burst
+      of 7,500 per second lasts 40 seconds. The database sustains 3,500 per
+      second. After the burst ends, how many seconds does the backlog take to
+      drain, assuming the average rate resumes?
+    answer: 80
+    tolerance: 1
+    unit: s
+    explain: >-
+      During the burst the backlog grows by 7,500 - 3,500 = 4,000 per second,
+      so it reaches 4,000 x 40 = 160,000 writes. Afterwards it shrinks by
+      3,500 - 1,500 = 2,000 per second, so draining takes 160,000 / 2,000 =
+      80 seconds. The average rate must stay below the store's capacity or the
+      queue never drains.
+    hints:
+      - Compute the backlog at the end of the burst first.
+      - After the burst, the net drain rate is capacity minus the average arrival rate.
+
+  - id: write-policies-delete-first-01
+    level: advanced
+    type: mcq
+    q: >-
+      Code deletes the cache key and then commits the database transaction
+      that changes the row. What can go wrong under concurrency?
+    options:
+      - The delete is applied twice, which makes the next read miss twice
+      - The transaction deadlocks because the cache holds a lock on the row
+      - Nothing, because deleting early only shortens the stale window
+      - A reader can miss, read the old committed row and refill the cache before the commit lands, leaving a stale value
+    answer: 3
+    explain: >-
+      Between the delete and the commit the database still returns the old
+      row. A concurrent reader repopulates the cache with it, and after the
+      commit the cache stays stale until TTL. Invalidate after the commit
+      succeeds.
+    hints:
+      - What does the database return to readers before the commit?
+      - What can a concurrent reader then do with that value?
+
+  - id: write-policies-dedup-store-01
+    level: staff
+    type: mcq
+    q: >-
+      A consumer reads at-least-once messages and updates a cache. To avoid
+      duplicates it records processed event IDs in a database table, then
+      writes the cache, in that order. Why does this not give exactly-once
+      effects?
+    options:
+      - A database table is not allowed to store event IDs from a message broker
+      - The ID record and the cache write are in different stores, so a crash between them either skips the cache update or repeats it
+      - At-least-once delivery never produces duplicate messages in practice
+      - Cache writes can never be repeated safely, whatever the operation is
+    answer: 1
+    explain: >-
+      Deduplication only yields exactly-once effects when the side effect and
+      the dedup record commit in the same transactional store. With a cache
+      write there is no shared transaction, so make the write itself
+      idempotent instead, for example a versioned conditional set that
+      ignores equal or older versions.
+    hints:
+      - Is there one transaction covering the table insert and the cache write?
+      - Which operation can safely be repeated without a processed table?
+
+  - id: write-policies-price-pipeline-01
+    level: staff
+    type: free
+    q: >-
+      Prices live in a database and are cached for a storefront. Design the
+      propagation of price changes so that a lost, duplicated or reordered
+      event cannot leave a wrong price in the cache for long. Name the pieces
+      and the failure each one covers.
+    answer: >-
+      Write the price change and an outbox row in one database transaction
+      (or capture the commit log with CDC) so no event is lost. A relay
+      publishes to a durable broker partitioned by product id, which keeps
+      per-key order. The consumer applies either a delete or a versioned
+      conditional set (version greater than stored), so duplicates and
+      reordered events are harmless. Retries use backoff with jitter, with a
+      dead-letter queue and an alert on its depth. Monitor consumer lag as the
+      staleness bound. A TTL bounds anything lost anyway, and a reconciliation
+      job samples cache against database and reports the inconsistency rate.
+    explain: >-
+      A strong answer maps each part to a failure: outbox or CDC for lost
+      events, versions for duplicates and reordering, DLQ for poison
+      messages, lag monitoring for delay, TTL and reconciliation as backstops.
+    hints:
+      - How do you make the event as durable as the price change itself?
+      - What rule makes a duplicate or an older event harmless?

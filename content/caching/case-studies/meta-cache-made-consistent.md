@@ -58,6 +58,29 @@ and reports violations, plus tracing for the life of invalidation events so
 the faulty step can be found. With measurement in place, Meta reports a large
 improvement in cache consistency.
 
+```mermaid
+flowchart LR
+  I["Invariant: cache eventually consistent with database"] --> P[Polaris checks it]
+  P --> V[Violations reported]
+  V --> T[Trace the invalidation event end to end]
+  T --> F[Find the faulty hop]
+```
+
+What versions would change (an illustration of the lesson below, not a description of Meta's system):
+
+```mermaid
+sequenceDiagram
+  participant C as Cache
+  participant DB as Database
+  C->>DB: fill: read k
+  DB-->>C: (reply delayed) v1
+  Note over DB: k updated to v2
+  DB->>C: invalidate k, version 2
+  Note over C: records version 2
+  C->>C: delayed fill v1 arrives
+  Note over C: v1 is older than 2, rejected
+```
+
 ## Lessons
 
 - Measure consistency; do not assume it. Turn "eventually consistent" into

@@ -92,8 +92,53 @@ accepted.
   briefly and retry, because the value is usually refilled within
   milliseconds.
 
+A lease serialises the fill: one client gets the token, the others wait briefly.
+
+```mermaid
+sequenceDiagram
+  participant R1 as Client 1
+  participant R2 as Client 2
+  participant C as Cache
+  participant DB as Database
+  R1->>C: get k (miss)
+  C-->>R1: miss and lease token
+  R2->>C: get k (miss)
+  C-->>R2: wait briefly and retry
+  R1->>DB: read k
+  R1->>C: set k with token
+  C-->>R1: accepted
+  R2->>C: get k (retry)
+  C-->>R2: value
+```
+
+A delete invalidates the outstanding token, so the stale set from the earlier diagram is rejected:
+
+```mermaid
+sequenceDiagram
+  participant R as Reader
+  participant W as Writer
+  participant C as Cache
+  participant DB as Database
+  R->>C: get k (miss)
+  C-->>R: miss and lease token
+  R->>DB: read k (old value)
+  W->>DB: update k
+  W->>C: delete k
+  Note over C: outstanding token invalidated
+  R->>C: set k with token
+  C-->>R: rejected
+```
+
 The paper reports that leases cut the peak database query rate for the
 affected workload from 17K/s to 1.3K/s.
+
+```mermaid
+xychart-beta
+  title "Peak database query rate, thousands per second"
+  x-axis ["Before leases","With leases"]
+  y-axis "thousand queries per second" 0 --> 20
+  bar [17,1.3]
+```
 
 ## Lessons
 

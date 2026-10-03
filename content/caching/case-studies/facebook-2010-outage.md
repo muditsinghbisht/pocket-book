@@ -51,11 +51,26 @@ stream of queries continued: every error removed cached data, which caused
 more database queries, which caused more errors. The database could not
 recover while the loop ran.
 
+> **Key idea:** the repair path was meant to heal the system, but because every client ran it against the same database, it multiplied one bad value into an overload.
+
 ## Fix
 
 To break the loop, all traffic to the database cluster was stopped, which
 meant turning the site off. Once the databases recovered, the site was
 brought back gradually.
+
+The incident as states, showing that fixing the value did not end it:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Normal
+  Normal --> BadValue: config change read as invalid
+  BadValue --> Loop: clients repair, errors delete keys
+  Loop --> Loop: bad value fixed, loop continues
+  Loop --> TrafficOff: stop all traffic to the cluster
+  TrafficOff --> Recovered: databases recover
+  Recovered --> Normal: site brought back gradually
+```
 
 ## Lessons
 

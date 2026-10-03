@@ -112,7 +112,33 @@ sequenceDiagram
 4. **Leases or tombstones.** A delete leaves a short-lived tombstone that blocks populates carrying older versions.
 5. **Change data capture (CDC).** Invalidate from the database's replication log rather than from application code, so invalidations follow commit order and cover writes made by any client. See the next lesson.
 
+The five mitigations at a glance:
+
+```mermaid
+mindmap
+  root((Stale refill race))
+    TTL backstop
+    Delayed double delete
+    Versioned compare-and-set
+    Leases or tombstones
+    CDC invalidation
+```
+
 **Race 2: delete before commit.** If the application deletes the cache key _before_ the database transaction commits, a concurrent reader can miss, read the old committed value from the database, and repopulate the cache with it before the commit lands. Always invalidate **after** the commit succeeds (and only if it commits).
+
+```mermaid
+sequenceDiagram
+  participant W as Writer
+  participant C as Cache
+  participant D as Database
+  participant R as Reader
+  W->>C: delete K (before commit)
+  R->>C: get K (miss)
+  R->>D: read K, old committed v1
+  R->>C: set K = v1
+  W->>D: commit K = v2
+  Note over C,D: cache holds v1, DB holds v2
+```
 
 **Race 3: failed delete.** If the cache delete fails (network blip), the database holds the new value and the cache the old one. The application should retry, enqueue the invalidation for later retry, or rely on TTL. This is a mini dual-write problem.
 
@@ -135,6 +161,18 @@ Weaknesses:
 ### Negative caching
 
 If a lookup finds nothing (the user does not exist), caching "not found" avoids repeated database queries for the same nonexistent key, a protection against **cache penetration**, in which attackers or buggy clients query random missing IDs. Store a sentinel value with a **short** TTL (for example 30 to 60 seconds). The risk: if the entity is created shortly afterwards, readers see "not found" until the sentinel expires. Creating the entity should delete the negative entry. A Bloom filter of known-valid IDs in front of the cache is another defence against penetration.
+
+How a lookup treats a negative entry, a real value and an absent key:
+
+```mermaid
+flowchart LR
+  L[Lookup id] --> H{"Cache entry?"}
+  H -->|"real value"| V[Return value]
+  H -->|"not-found sentinel"| N[Return not found]
+  H -->|"absent"| D[(Database)]
+  D -->|"row"| S1[Cache value with TTL]
+  D -->|"no row"| S2["Cache sentinel, 30 to 60 s"]
+```
 
 ## 3. Read-through
 
@@ -171,6 +209,8 @@ flowchart LR
 
 Read-through and cache-aside produce the same data flow; the difference is **who owns the code**. Many practitioners treat a well-designed cache-aside helper (`cache.getOrLoad(key, loader)`) as read-through in practice.
 
+> **Key idea:** cache-aside and read-through move the same data; the difference is who owns the loading code. Owning it in one place is what gives request coalescing.
+
 ### Pairing with write policies
 
 Read-through is naturally paired with **write-through** (the same component handles both directions) or **write-behind**. A "cache as the front of the database" architecture does this: the application sees one logical store. This yields simplicity and read-after-write consistency for data written through it, at the cost of requiring all writers to go through the cache; any writer that bypasses it (a migration script, another service) creates staleness.
@@ -190,6 +230,19 @@ LoadingCache<String, Config> cache = Caffeine.newBuilder()
 
 Semantics: after 2 minutes, the next read returns the current (possibly slightly old) value immediately and triggers a background refresh. After 10 minutes with no refresh, the entry expires. Hot keys therefore never expire and users never wait; cold keys are not refreshed (the reload is triggered by reads), so you do not waste work on unused data. A related HTTP idea is `stale-while-revalidate`.
 
+The life of one entry with `refreshAfterWrite` at 2 minutes and `expireAfterWrite` at 10 minutes:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Fresh: load
+  Fresh --> Refreshing: read after 2 min
+  Refreshing --> Fresh: reload ok
+  Refreshing --> Refreshing: reload fails, keep serving old value
+  Fresh --> Expired: 10 min hard expiry
+  Refreshing --> Expired: 10 min hard expiry
+  Expired --> [*]
+```
+
 ### Worked example: load profile
 
 A key serving 500 requests per second has a 60-second TTL and a 200 ms load time.
@@ -198,6 +251,16 @@ A key serving 500 requests per second has a 60-second TTL and a 200 ms load time
 - **Refresh-ahead at 48 seconds (80 percent of TTL).** The first read after 48 seconds triggers one background query. All 100 or so requests in the following 200 ms are served from the cached value. Database load: 1 query per minute; user-visible misses: 0.
 
 If the same key had 1 request per minute, refresh-ahead offers little (and wastes a refresh if no request follows); lazy loading is appropriate.
+
+The worked example in numbers (500 requests per second, 200 ms load):
+
+```mermaid
+xychart-beta
+  title "Database queries per minute for the key"
+  x-axis ["Lazy expiry","Lazy with coalescing","Refresh-ahead"]
+  y-axis "queries" 0 --> 120
+  bar [100,1,1]
+```
 
 ### Costs and caveats
 
