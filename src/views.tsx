@@ -3,6 +3,8 @@ import type { CSSProperties, ReactNode } from "react";
 import { isQuizQuestion, type Level, type Section } from "./content/model.ts";
 import type { PracticeQuestion, TopicNode } from "./content/schema.ts";
 import { Flashcards } from "./Flashcards.tsx";
+import { inlineMarkdown } from "./inlineMarkdown.tsx";
+import { btn } from "./Transfer.tsx";
 import { Mdx } from "./Mdx.tsx";
 import { Quiz } from "./Quiz.tsx";
 import { Notes } from "./Notes.tsx";
@@ -452,22 +454,34 @@ export function SectionView({
         <>
           {title}
           {node.cheatsheet ? (
-            node.cheatsheet.sections.map((s) => (
-              <section
-                key={s.heading}
-                style={tone("cheatsheet")}
-                className="card mb-4 p-4 break-inside-avoid sm:p-5"
+            <>
+              <button
+                type="button"
+                className={`${btn} mb-6 w-full sm:w-auto print:hidden`}
+                onClick={() => print()}
               >
-                <h2 className="mb-2 text-lg font-semibold text-tone">
-                  {s.heading}
-                </h2>
-                <ul className="list-disc space-y-1.5 pl-5 marker:text-muted">
-                  {s.items.map((i) => (
-                    <li key={i}>{i}</li>
-                  ))}
-                </ul>
-              </section>
-            ))
+                Print cheat-sheet
+              </button>
+              {/* Print: compact two columns; a section never splits across columns or pages. */}
+              <div className="print:columns-2 print:gap-4 print:text-sm">
+                {node.cheatsheet.sections.map((s) => (
+                  <section
+                    key={s.heading}
+                    style={tone("cheatsheet")}
+                    className="card mb-4 p-4 break-inside-avoid sm:p-5 print:mb-3 print:p-3"
+                  >
+                    <h2 className="mb-2 text-lg font-semibold text-tone print:text-base">
+                      {s.heading}
+                    </h2>
+                    <ul className="list-disc space-y-1.5 pl-5 marker:text-muted print:space-y-1">
+                      {s.items.map((i) => (
+                        <li key={i}>{inlineMarkdown(i)}</li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+            </>
           ) : (
             <Empty />
           )}
