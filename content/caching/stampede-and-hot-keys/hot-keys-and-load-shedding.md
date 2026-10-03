@@ -42,6 +42,16 @@ A node with a 10 Gbit/s network interface cannot serve this even though 20,000 o
 
 A cluster of 10 nodes receives 200,000 requests per second. With uniform spread each node sees 20,000 per second (20 percent utilisation at a 100,000-ops limit). Now one key draws 120,000 of those requests; the other keys total 80,000, spread over 10 nodes: 8,000 each. The hot node receives 120,000 + 8,000 = 128,000 per second, more than its capacity, while the other nine sit at 8 percent. Aggregate capacity is 1,000,000 per second; the cluster is 20 percent utilised, and it is failing. Hot key problems are invisible to averaged metrics.
 
+```mermaid
+xychart-beta
+  title "Requests per second per node (limit 100,000)"
+  x-axis ["Hot node", "Each other node"]
+  y-axis "Requests per second" 0 --> 140000
+  bar [128000, 8000]
+```
+
+> **Key idea:** the cluster is 20 percent utilised and still failing. Averages hide hot keys, so watch per-node load.
+
 When the hot node saturates, latency rises and requests time out. Clients treat timeouts as misses and fall back to the database (the fallback path we warned about), so the database now absorbs the traffic of the hot key. A cache node's overload becomes a database overload.
 
 ## 2. Detecting hot keys
@@ -75,6 +85,13 @@ flowchart LR
   A3 -->|1 per TTL| Cache
   Cache -.->|miss| DB[(Database)]
 ```
+
+| Mitigation           | Effect on the hot node                | Main cost                            |
+| -------------------- | ------------------------------------- | ------------------------------------ |
+| Local cache, 1 s TTL | 120,000 down to 200 per s             | Staleness up to 1 s per server       |
+| Key splitting, R = 4 | 30,000 per s each                     | Write amplification, partial failure |
+| Hedging at p95       | About 5 percent extra load            | Worse under overload                 |
+| CDN or smaller value | Load never arrives, or less bandwidth | Only for public or shrinkable data   |
 
 ### 3.1 Local (near) caches
 
@@ -115,6 +132,18 @@ void writeAll(String base, int replicas, Value v, Duration ttl) {
 }
 ```
 
+```mermaid
+flowchart LR
+  Rd["Readers pick a random copy"] --> K0["hot:key#0 on node A"]
+  Rd --> K1["hot:key#1 on node B"]
+  Rd --> K2["hot:key#2 on node C"]
+  Rd --> K3["hot:key#3 on node D"]
+  Wr["Writer updates all R copies"] -.-> K0
+  Wr -.-> K1
+  Wr -.-> K2
+  Wr -.-> K3
+```
+
 **Worked example.** The key receives 120,000 reads per second on a node limited to 100,000. With R = 4 copies on four different nodes, each handles 30,000 reads per second, plus the usual background load. Bandwidth also divides by four, which solves the earlier 16 Gbit/s example if R is at least 2 (8 Gbit/s each, and R = 4 gives 4 Gbit/s).
 
 Costs:
@@ -132,6 +161,18 @@ A variant is **read replicas** of cache nodes: replicate the whole hot shard to 
 Hot nodes and busy nodes have long tails: most requests are fast, a few are very slow. **Request hedging** sends a request to one replica and, if no response arrives within a threshold, sends a second ("hedged") request to another replica and uses whichever answers first. The technique is described in "The Tail at Scale" (Dean and Barroso), which shows how to cut tail latency at a small cost in extra load.
 
 The key choice is the threshold: if it is the **95th percentile** latency, only about 5 percent of requests trigger a hedge, so the extra load is roughly 5 percent. The slowest 5 percent of requests, which would have taken, say, 50 ms or more, now complete at about (threshold + a typical latency), perhaps 2 to 3 ms in total in a healthy cache. The p99 can drop dramatically for a small increase in load.
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant R1 as Replica 1
+  participant R2 as Replica 2
+  C->>R1: get key
+  Note over C: no answer by the p95 threshold
+  C->>R2: hedged get key
+  R2-->>C: value (first answer wins)
+  C->>R1: cancel
+```
 
 Caveats:
 
@@ -162,6 +203,16 @@ With **load shedding**, the system rejects the excess 500 per second immediately
 
 The principle is simple and somewhat counterintuitive: **rejecting some work early increases the amount of useful work completed.**
 
+```mermaid
+flowchart LR
+  subgraph NS["No shedding: offered 1,500 per s"]
+    Q1["Queue grows"] --> W1["Waits exceed 1 s timeout"] --> G1["Goodput near zero"]
+  end
+  subgraph SH["Shedding: reject 500 per s"]
+    Q2["1,000 admitted"] --> W2["Served within timeout"] --> G2["Goodput 1,000 per s"]
+  end
+```
+
 ### 4.2 Sizing the queue with Little's law
 
 Allow a queue only as long as it can drain within the time the client is willing to wait. If the service rate is mu = 1,000 per second and requests should wait no longer than 200 ms in the queue, Little's law gives the maximum queue length:
@@ -189,6 +240,8 @@ Not all requests are equal. Classify and shed in order of lowest value first:
 5. Core user transactions last (checkout, login).
 
 A **degraded response** (a cached or default answer; a page without the recommendations panel) is better than an error, and an error returned in 2 ms (HTTP 503 with a `Retry-After` hint) is better than a timeout after 30 s.
+
+> **Key idea:** a 503 in 2 ms beats a timeout after 30 s. Shed the lowest-value work first and answer it with something degraded rather than nothing.
 
 ### 4.5 Concurrency limits and bulkheads
 
@@ -233,6 +286,14 @@ stateDiagram-v2
 - **Retries with exponential backoff and jitter**, and a **retry budget**: retries may add at most, say, 10 percent to the request rate. Without a budget, retries multiply load in the worst moments: three retries across three layers of services can amplify a failure by 4 x 4 x 4 = 64 times.
 - **Do not retry on overload signals** such as 503 with `Retry-After`, or at least obey the hint.
 
+```mermaid
+flowchart LR
+  U["1 request"] -->|"x4"| A["Service A: 4"]
+  A -->|"x4"| B["Service B: 16"]
+  B -->|"x4"| C["Service C: 64"]
+  C --> DB[("Database sees 64")]
+```
+
 ### 4.8 Backpressure
 
 **Backpressure** is the propagation of "slow down" upstream so that producers match the consumer's rate, rather than buffering without bound. In synchronous call chains it is automatic if you have bounded concurrency (callers block or get rejected). In asynchronous systems it must be designed: bounded queues, explicit demand signals (reactive streams), or credit-based flow control. An unbounded queue is not backpressure; it is a deferred failure that arrives as memory exhaustion and enormous latency.
@@ -249,6 +310,14 @@ Combine everything from this section in one picture. From the user to the origin
 4. **Refill path**: single-flight per instance; distributed lock or lease; stale serving; probabilistic early refresh; jittered TTLs.
 5. **Origin protection**: bulkhead (concurrency limit) on the database client; statement timeouts and query cancellation; circuit breaker; priority-based load shedding with degraded responses.
 6. **Operations**: metrics for hit ratio, miss rate, per-node imbalance, duplicate loads, queue depth, shed counts; runbooks for cache flush, hot key splitting, ramping traffic; regular cold-start and overload tests.
+
+```mermaid
+flowchart TB
+  E["Edge: CDN, rate limits, validation"] --> A["App: local cache, Bloom filter, negative cache"]
+  A --> CA["Cache access: short timeout, hedging, key splitting"]
+  CA --> RF["Refill: single-flight, lock, stale, jitter"]
+  RF --> OP["Origin: bulkhead, circuit breaker, shedding"]
+```
 
 **Worked example.** The database handles 1,000 queries per second. Traffic is 10,000 requests per second at 95 percent hit ratio (500 per second to the database). A cache node fails, and the hit ratio falls to 85.5 percent (10 nodes; see the previous lesson): 1,450 queries per second are requested. Without protections: 1.45 times capacity, queues grow, timeouts follow, goodput collapses. With a bulkhead sized at the database's sustainable concurrency (1,000 per second x 20 ms = 20 concurrent): 1,000 queries per second proceed, 450 per second are shed. Of those, say 300 per second are background or low-value requests served degraded content, and 150 per second are core reads served from a stale copy where available or rejected with a retry hint. Core-user goodput stays high, the cache refills at the rate the database allows, and the system self-heals within the warm-up period of a few minutes (Zipf-like skew refills the top keys first). The failure is invisible to most users, which is the entire purpose of the design.
 

@@ -84,3 +84,178 @@ questions:
       - What happens at the moment many popular keys expire at once?
       - Are the sale pages even in the cache at 12:00:00?
       - Which data must be fresh, and which can be minutes old?
+
+  - id: stampede-defn-01
+    level: beginner
+    type: mcq
+    q: >-
+      Which situation is a cache stampede?
+    options:
+      - A cache node runs out of memory and evicts its oldest key
+      - A popular key expires and many concurrent requests all query the database for it
+      - A client requests an id that does not exist, over and over
+      - A user reads their own write and sees an old value
+    answer: 1
+    explain: >-
+      A stampede (dogpile, thundering herd) is many concurrent requests
+      missing on the same key and each recomputing it from the origin. The
+      other options describe eviction, cache penetration and a
+      read-your-writes violation.
+
+  - id: stampede-jitter-02
+    level: beginner
+    type: mcq
+    q: >-
+      TTL jitter spreads out expiry times. Which of these stampede triggers
+      does jitter NOT help with?
+    options:
+      - A batch job that loaded a million keys with one TTL
+      - A deploy that restarts every cache node at once
+      - Keys created together by a nightly warm-up
+      - Many moderately popular keys that share an expiry second
+    answer: 1
+    explain: >-
+      Jitter addresses synchronized expiry of many keys. A restart empties the
+      cache regardless of TTLs, which is a cold start and needs pre-warming,
+      a traffic ramp or shedding.
+
+  - id: stampede-herd-02
+    level: intermediate
+    type: numeric
+    q: >-
+      A key receives 2,000 requests per second and takes 150 ms to fill. How
+      many requests, on average, arrive while the first fill is in flight (the
+      herd size)?
+    answer: 300
+    tolerance: 0
+    unit: requests
+    explain: >-
+      Little's law gives the herd as lambda x S = 2,000 x 0.15 = 300. One fill
+      is needed, so 299 queries are redundant.
+    hints:
+      - Herd size is arrival rate times fill time.
+      - Convert milliseconds to seconds first.
+
+  - id: stampede-bloom-01
+    level: intermediate
+    type: numeric
+    q: >-
+      You protect against random-id probing with a Bloom filter holding 1
+      million keys at a 1 percent false positive rate, using m = -n ln(p) /
+      (ln 2)^2 bits. About how many megabytes of memory is that? (1 MB =
+      8,000,000 bits.)
+    answer: 1.2
+    tolerance: 0.05
+    unit: MB
+    explain: >-
+      ln(0.01) = -4.605 and (ln 2)^2 = 0.4805, so m/n = 9.585 bits per key.
+      For 1,000,000 keys that is 9,585,000 bits, about 1.2 MB. Ten times as
+      many keys needs about 12 MB.
+    hints:
+      - Compute bits per key first, then multiply by n.
+      - 9.6 bits per key is the figure for p = 1 percent.
+
+  - id: stampede-lock-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A distributed refill lock has a 100 ms expiry, but the refill usually
+      takes 300 ms. What happens?
+    options:
+      - The lock expires mid-fill, another request becomes leader, and duplicate fills return
+      - The cache rejects the fill because the lock is gone
+      - Waiters are served faster because the lock is released early
+      - Nothing, the lock is only advisory
+    answer: 0
+    explain: >-
+      A lock that expires before the leader finishes lets a second request win
+      the lock and start a duplicate fill, which is the herd the lock was
+      meant to prevent. Choose the expiry from the p99.9 fill latency, long
+      enough for the fill but short enough to recover from a crashed leader.
+
+  - id: stampede-xfetch-01
+    level: advanced
+    type: mcq
+    q: >-
+      With probabilistic early expiration (XFetch, beta = 1), a request
+      arrives exactly one recompute time (delta) before the entry's expiry.
+      Roughly what is the probability that it triggers the refresh?
+    options:
+      - 5 percent
+      - 37 percent
+      - 63 percent
+      - 100 percent
+    answer: 1
+    explain: >-
+      P(refresh | t) = exp(-t / (delta x beta)). With t = delta and beta = 1
+      that is e^-1, about 0.37. At 3 delta it is about 5 percent, and at
+      expiry it is 100 percent, so the probability climbs smoothly towards
+      expiry.
+
+  - id: stampede-nodeloss-01
+    level: advanced
+    type: mcq
+    q: >-
+      Traffic is 10,000 requests per second at a 95 percent hit ratio and the
+      database can handle 1,000 queries per second. The cache is spread over 10
+      equal nodes and one node dies. Roughly what database load follows,
+      assuming keys were spread uniformly?
+    options:
+      - 500 queries per second
+      - 950 queries per second
+      - 1,000 queries per second
+      - 1,450 queries per second
+    answer: 3
+    explain: >-
+      One tenth of the cached data is gone, so the hit ratio becomes 0.95 x
+      0.9 = 85.5 percent and the miss ratio 14.5 percent: 1,450 queries per
+      second, 1.45 times capacity. More, smaller nodes would reduce this
+      blast radius.
+
+  - id: stampede-hotkey-01
+    level: staff
+    type: mcq
+    q: >-
+      A configuration document is read 120,000 times per second by 200 app
+      servers and lives on one cache node that handles at most 100,000
+      operations per second. Readers tolerate data up to 1 second old. Which
+      change fixes the node most simply?
+    options:
+      - Double the number of cache nodes
+      - Raise the cache node's TTL to one hour
+      - Add a 1-second in-process cache on each app server for this key
+      - Retry failed reads three times with no backoff
+    answer: 2
+    explain: >-
+      A key lives on exactly one node, so adding nodes does not spread its
+      load. A 1-second local cache means each server fetches it once per
+      second: 200 servers x 1 = 200 reads per second instead of 120,000. The
+      staleness of up to 1 second is within the stated tolerance. Retries only
+      add load.
+
+  - id: stampede-overload-01
+    level: staff
+    type: free
+    q: >-
+      After a cache node failure the database is asked for 1,450 queries per
+      second but can sustain 1,000. Describe how you keep core user traffic
+      working while the cache refills.
+    answer: >-
+      Cap concurrency on the database client with a bulkhead sized from
+      Little's law (about 1,000 per second x 20 ms = 20 in flight), so that
+      1,000 queries per second proceed and about 450 per second are shed
+      immediately. Shed by priority: background and batch work first, then
+      non-essential features with degraded responses, then reads that can be
+      served stale; keep checkout and login last. Use statement timeouts and
+      deadlines, retries with backoff, jitter and a budget, and a circuit
+      breaker. Coalesce refills (single-flight plus a lock or lease) and ramp
+      traffic back as the hit ratio recovers. Long term: more and smaller
+      cache nodes, a gutter pool, and regular cold-start tests.
+    explain: >-
+      The principle is that rejecting excess work early raises goodput. Strong
+      answers size limits from capacity, prioritise what to shed, and avoid
+      retry amplification.
+    hints:
+      - How many concurrent queries does the database really need?
+      - Which requests can be degraded or served stale?
+      - What stops retries from multiplying the load?

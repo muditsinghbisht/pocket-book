@@ -22,6 +22,25 @@ A cache holds a copy of data that lives somewhere else. When the original change
 
 This chapter explains why. The following chapters, TTL design, Explicit and event-driven invalidation, and Consistency models and leases, offer the remedies.
 
+Four forces collide in every invalidation design:
+
+```mermaid
+mindmap
+  root((Invalidation))
+    Prompt
+      needs the writer
+    Reliable
+      lost messages
+      crashes
+    Cheap
+      little work per write
+    Concurrent
+      races
+      reordering
+```
+
+> **Key idea:** a cache is a copy, and a copy can only be corrected by something that knows the original changed. Everything in this section is a way of delivering that news, or of bounding how long a copy may stay wrong without it.
+
 ## 2. Terms: truth, copies and staleness
 
 Let us fix vocabulary.
@@ -53,6 +72,20 @@ This is the **dual write** problem, and it cannot be made correct by local reaso
 
 **Failure 2: the second step fails.** The cache is unreachable for a second. The write to it errors. If the application ignores the error, the cache is stale. If it propagates the error, the user sees a failure for an update that did commit in the database, and may retry, which is usually safe but not always.
 
+Every failure of the dual write branches off the same two steps:
+
+```mermaid
+flowchart TD
+  S["db.update (step 1)"] --> X{"What happens next?"}
+  X -->|"crash before step 2"| F1["DB new, cache old"]
+  X -->|"cache set errors"| F2["DB new, cache old, or user sees a failure"]
+  X -->|"another writer interleaves"| F3["Cache keeps the older value"]
+  X -->|"all fine"| OK["Both new"]
+  F1 --> W["Stale until TTL, or forever"]
+  F2 --> W
+  F3 --> W
+```
+
 **Failure 3: concurrent writers reorder.** Two writers update the same row. Their database writes and cache writes can interleave in different orders:
 
 ```mermaid
@@ -69,6 +102,8 @@ sequenceDiagram
 ```
 
 The database serialises the two writes with A first and B second, so B is the truth. But the cache calls arrive in the opposite order, so the cache ends with A. There is no TTL in this scenario to rescue us, and no later write may come: the wrong value can persist for as long as the entry lives. Nothing in the code looks wrong in isolation. The bug exists only in the interleaving.
+
+> **Key idea:** the database decides the order of writes, but the cache calls travel a different path. Two independent systems cannot agree on an order without a protocol.
 
 This should convince you of the main point: **two independent systems cannot be updated together without a protocol**. Distributed systems theory has solutions (two-phase commit, consensus, a single log from which both are derived) but each one is far more expensive than "just set the key", and most caches are chosen precisely because they are cheap.
 
@@ -158,6 +193,26 @@ If reads go to a **read replica** and writes to a primary, then there is replica
 
 Even after the replica catches up at t4, the cache keeps v1. Here no delay was needed in the reader at all. Replication lag, typically milliseconds but sometimes seconds under load, acted as the delay. Race B is the reason people recommend a TTL even when you have explicit invalidation, and it is the motivation for techniques such as delayed double deletion and for deriving invalidations from the replication stream itself (see Explicit and event-driven invalidation).
 
+The same race, drawn with the replica as the delay:
+
+```mermaid
+sequenceDiagram
+  participant W as Writer
+  participant P as Primary
+  participant Rp as Replica
+  participant C as Cache
+  participant R as Reader
+  W->>P: write x = v2
+  W->>C: delete x
+  R->>C: get x
+  C-->>R: miss
+  R->>Rp: read x
+  Rp-->>R: v1 (not replicated yet)
+  R->>C: set x = v1
+  P-->>Rp: replicate v2
+  Note over C: cache keeps v1 after the replica catches up
+```
+
 ### 5.3 Race C: the writer's cache update goes first
 
 If instead the writer updates the cache and then the database, a reader may interleave: the reader sees the new cached value, but the database write may subsequently fail and roll back, leaving a cached value that never existed in the source of truth. This is the "value from the future" problem. Ordering the operations as "database first, then cache" avoids phantom values, but then we face races A and B. There is no free lunch in the ordering.
@@ -165,6 +220,21 @@ If instead the writer updates the cache and then the database, a reader may inte
 ### 5.4 What the races have in common
 
 All three races have the same structure: **an operation computed from a read of the source of truth is applied to the cache after a conflicting write**. The cache is being updated using information that was true when it was read and false by the time it was applied. In distributed systems vocabulary, this is a "time-of-check to time-of-use" problem. The cure is to make the cache apply an operation only if nothing relevant has happened since the read. That is exactly what leases, version checks and compare-and-set achieve, and they are the subject of the lesson on consistency models and leases.
+
+```mermaid
+flowchart LR
+  R["Read the source at time t1"] --> G["Gap: a write commits"]
+  G --> A["Apply to cache at t2"]
+  A --> BAD["Cache holds a t1 value"]
+  R -.->|"fix: apply only if nothing changed since t1"| CAS["Lease, version check or CAS"]
+  CAS -.-> GOOD["Stale apply is rejected"]
+```
+
+| Race           | Who supplies the delay         | Needs a slow reader? | Ends with                    |
+| -------------- | ------------------------------ | -------------------- | ---------------------------- |
+| A: slow reader | GC pause, slow network         | Yes                  | Old value in cache until TTL |
+| B: replica lag | Replication lag                | No                   | Old value in cache until TTL |
+| C: cache first | Failed or rolled back DB write | No                   | A value that never existed   |
 
 ## 6. The dependency problem
 
@@ -179,6 +249,17 @@ Suppose a blog's front page is cached under the key `frontpage`, and it embeds t
 - A new article that outranks one of the ten.
 
 One cached value depends on potentially hundreds of rows, and one row (an author's name) may appear in hundreds of cached values (every page by that author, every comment list, every search result). Invalidation needs a **reverse index** from rows to the cache keys that depend on them, or a conservative rule such as "invalidate all page-level keys on any write", which destroys the hit ratio. Maintaining such a dependency graph is as hard as the original problem, because the graph is itself state that must be consistent with the data.
+
+The reverse index is what makes invalidation tractable. Without it, a write to one row cannot find the keys it affects:
+
+```mermaid
+flowchart LR
+  A1["author:42 renamed"] --> I[("Reverse index")]
+  I --> K1["frontpage"]
+  I --> K2["author-page:42"]
+  I --> K3["comment-list:7"]
+  I --> K4["search:java"]
+```
 
 Practitioners use several tactics, each a tradeoff:
 
@@ -222,6 +303,18 @@ For T = 30 s: mu*T = 0.05, (1 − e^−0.05) / 0.05 = 0.0488 / 0.05 = 0.975, so 
 
 Roughly, the stale fraction is about mu × T / 2 when mu × T is small. This gives an intuition for a TTL-only design: halving the TTL halves the staleness exposure, but also lowers the hit ratio (the TTL chapter works through that trade). (The formula assumes reads are spread evenly over the entry's lifetime and that the entry is always resident; it is an approximation, not a law.)
 
+The three worked cases for an object updated every 600 s, side by side:
+
+```mermaid
+xychart-beta
+  title "Stale reads by TTL (update every 600 s)"
+  x-axis "TTL in seconds" ["30", "60", "300"]
+  y-axis "Stale reads (percent)" 0 --> 25
+  bar [2.5, 4.8, 21.3]
+```
+
+> **Key idea:** halving the TTL roughly halves the stale fraction, but each halving also costs hit ratio. The next lesson prices that trade.
+
 ## 8. Defence in depth
 
 Because each mechanism has failure modes, robust designs layer them:
@@ -231,6 +324,14 @@ Because each mechanism has failure modes, robust designs layer them:
 3. **Backstop**: a TTL on every entry, so any residual error is bounded in time. _Every cache entry should have an expiry_, even if it is long.
 4. **Detection**: sampling comparison between the cache and the source of truth in the background; the observed disagreement rate is a live measurement of your real staleness.
 5. **Escape hatch**: a way to purge a key, a prefix or a whole cache in an emergency.
+
+```mermaid
+flowchart TB
+  L1["1. Prompt: delete on write or event stream"] --> L2["2. Race closure: lease, version, double delete"]
+  L2 --> L3["3. Backstop: TTL on every entry"]
+  L3 --> L4["4. Detection: sampling probe"]
+  L4 --> L5["5. Escape hatch: purge key, prefix or cache"]
+```
 
 The sampling check in particular is underrated. A few lines of code can read a random sample of cached keys every minute, compare each with the database and export the percentage that differs. If you have never measured it, you do not know how wrong your cache is.
 

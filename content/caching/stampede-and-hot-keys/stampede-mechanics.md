@@ -93,6 +93,16 @@ This is Little's law again: the number of requests "in the system" (waiting for 
 
 The last two rows show the sensitivity to S. If a database that is already stressed doubles the fill time, the herd doubles. The rule of thumb: **a key is stampede-prone when lambda x S is much larger than one**. A key requested once a minute with a 10 ms fill (herd of 0.0002) will never stampede. A key requested 1,000 times per second with a 200 ms fill will, every time it expires.
 
+```mermaid
+xychart-beta
+  title "Herd size = lambda x S"
+  x-axis ["100/s, 50 ms", "1,000/s, 200 ms", "5,000/s, 1 s", "1,000/s, 3 s"]
+  y-axis "Concurrent identical queries" 0 --> 5500
+  bar [5, 200, 5000, 3000]
+```
+
+> **Key idea:** a stampede is a property of the product of popularity and fill time. Doubling the fill time doubles the herd, and a bigger herd lengthens the fill.
+
 Notice that stampede risk is about the _product_. Expensive-to-compute and popular keys are the worst: the home page, a leaderboard, the top-sellers list, the feature-flag configuration, a hot user's profile. Teams often discover which keys these are only after an incident.
 
 ## 4. The load on the origin
@@ -120,6 +130,21 @@ Assume that the database runs at most 16 queries at a time and queues the rest f
 
 For those 2.3 seconds the database is saturated by redundant work. **Every other query in the system** (for other keys, other features, other users) waits behind those 184 queries. A stampede on one key causes collateral damage to the entire application. The total wasted work is 199 queries × 0.2 core-s = 39.8 core-seconds, which is 2.5 seconds of the whole 16-core machine, burned to recompute one value that needed 0.2 core-seconds.
 
+```mermaid
+flowchart LR
+  T0["t = 0: key expires"] --> T1["t = 0.2 s: first fill completes"]
+  T1 --> Q["200 arrived, about 184 still queued"]
+  Q --> W["184 / 16 = 11.5 batches of 0.2 s"]
+  W --> E["About 2.3 s of pointless database work"]
+```
+
+|                         | Value                                    |
+| ----------------------- | ---------------------------------------- |
+| Needed work             | 1 query, 0.2 core-s                      |
+| Redundant queries       | 199                                      |
+| Wasted work             | 39.8 core-s (2.5 s of a 16-core machine) |
+| Offered load / capacity | 200 / 16 = 12.5                          |
+
 ### 4.3 A worse model: degradation under concurrency
 
 The FIFO model is the _optimistic_ one. Real databases degrade when too many queries run concurrently: lock contention, cache thrashing, context switches, memory pressure and connection overhead all increase the service time as concurrency rises. If running 200 queries at once makes each take 1.5 s instead of 0.2 s, then S itself has become 1.5 s, the herd becomes lambda x S = 1,500, and the database is pushed further into degradation. In this model the system has two stable states: a healthy state with S = 0.2 s, and a congested state with S >> 0.2 s, and a sufficiently large herd throws it from one to the other.
@@ -139,9 +164,30 @@ no fill ever succeeds -> the key stays missing -> load persists
 
 Abandoned queries are especially insidious: the client gave up but the database is still executing the query, so the database does work that nobody will ever use.
 
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant App
+  participant DB
+  C->>App: request
+  App->>DB: query (S = 1.5 s)
+  Note over App: timeout at 1 s, thread gives up
+  App-->>C: error
+  Note over App: cache.set never runs
+  DB-->>DB: keeps executing, result unused
+```
+
 ### 5.2 Retries multiply the load
 
 Clients and middleware retry on timeouts. If each failed request is retried up to 3 more times, the offered load can approach 4× the original. Our 1,000 requests per second become 4,000 attempts per second, S gets worse, and more requests time out. Retries convert a transient overload into a sustained one. Without backoff and jitter, retries also synchronise into waves.
+
+```mermaid
+xychart-beta
+  title "Attempts per second at the origin"
+  x-axis ["No retries", "Up to 3 retries each"]
+  y-axis "Attempts per second" 0 --> 4500
+  bar [1000, 4000]
+```
 
 ### 5.3 The loop
 
@@ -156,6 +202,14 @@ flowchart TD
 
 Once this loop is running, removing the original trigger does not stop it. The system is in what recent literature calls a **metastable failure**: a failure state that is sustained by the system's own feedback (work amplification, retries, a cold cache) after the initial trigger has gone. The recovery action is not "wait", it is "break the loop": shed load, fill the key by hand, block the retries, or restart traffic gradually.
 
+```mermaid
+stateDiagram-v2
+  [*] --> Healthy
+  Healthy --> Congested: big herd pushes S far above 0.2 s
+  Congested --> Congested: timeouts, retries, no fill
+  Congested --> Healthy: break the loop (shed, hand-fill, ramp)
+```
+
 ## 6. The triggers, classified
 
 All stampedes share the mechanics above; they differ in what removes the cache entry or makes it unavailable.
@@ -169,6 +223,22 @@ All stampedes share the mechanics above; they differ in what removes the cache e
 7. **Client behaviour change.** A mobile app release makes thousands of devices poll a particular key at the same minute; a TTL-based alarm in clients fires on the hour.
 
 Notice that cases 4 and 6 are not about expiry at all. A system protected only by "the key has a TTL with jitter" is not protected against them.
+
+```mermaid
+mindmap
+  root((Stampede triggers))
+    Expiry
+      hot key TTL
+      synchronized TTLs
+    Removal
+      hot key delete
+      eviction
+    Availability
+      cold start
+      cache node down
+    Clients
+      synchronized polling
+```
 
 ## 7. Detecting stampedes
 

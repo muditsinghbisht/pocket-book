@@ -48,6 +48,14 @@ overload      = 5.5 times capacity
 
 The attacker needs only half as much traffic as the legitimate users to push the database to 5.5 times capacity. The cache's hit ratio for legitimate users is irrelevant: the attack bypasses it.
 
+```mermaid
+xychart-beta
+  title "Database load in queries per second"
+  x-axis ["Normal", "Under attack", "Capacity"]
+  y-axis "Queries per second" 0 --> 6000
+  bar [500, 5500, 1000]
+```
+
 ### 2.3 Defence 1: negative caching
 
 Cache "not found" with a short TTL (see TTL design for the rules: short TTL, invalidate on create, bounded size, distinguish "not found" from errors). If the same missing id is requested repeatedly, the database is hit once per negative TTL.
@@ -76,6 +84,16 @@ It answers "definitely absent" for the great majority of random keys, in memory,
 #### How it works
 
 A Bloom filter is an array of m bits, initially zero, with k independent hash functions. To **add** a key, compute its k hashes, each giving a position in 0..m-1, and set those k bits. To **query** a key, compute the same k positions; if any bit is zero, the key is definitely absent; if all are one, it is possibly present (those bits may have been set by other keys).
+
+```mermaid
+flowchart LR
+  A["add key a"] --> H1["h1, h2, h3 give bits 2, 5, 9"]
+  H1 --> S["Set bits 2, 5, 9"]
+  Q["query key b"] --> H2["h1, h2, h3 give bits 5, 7, 9"]
+  H2 --> C{"Any bit zero?"}
+  C -->|"yes: bit 7"| N["Definitely absent"]
+  C -->|"all one"| M["Maybe present"]
+```
 
 ```mermaid
 flowchart TD
@@ -112,6 +130,11 @@ check:        (1 - e^(-7/9.585))^7 = (1 - e^(-0.7303))^7 = (1 - 0.4818)^7
 ```
 
 Twelve megabytes protect ten million keys, and fit in every application server's memory. For p = 0.1 percent, m / n = 14.38 bits per key (about 18 MB for the same n), and k = 10.
+
+| Target false positives | Bits per key | Memory for 10 million keys | Hashes k |
+| ---------------------- | ------------ | -------------------------- | -------- |
+| 1 percent              | 9.6          | about 12 MB                | 7        |
+| 0.1 percent            | 14.4         | about 18 MB                | 10       |
 
 Effect on the attack: with p = 1 percent, 5,000 random requests per second yield 50 per second false positives that reach the database. The database load is 500 + 50 = 550 per second instead of 5,500, a tenfold reduction in the attack's effect (a hundredfold reduction of the attack traffic itself). Combine with negative caching for the 50 that do pass, if the same ids repeat.
 
@@ -162,6 +185,14 @@ A cache that has just started is empty. For a period after start, almost every r
 
 The trouble is that the capacity requirement of the origin is set by the _cold_ case, not the warm one, and the cold case is rarely tested.
 
+```mermaid
+flowchart TD
+  A["Cache empty"] --> B["10,000 per s reach a 1,000 per s database"]
+  B --> C["Queries slow, fills time out"]
+  C --> D["Cache not repopulated"]
+  D --> A
+```
+
 ### 3.2 Events that cause cold starts
 
 - **Cache restart or crash** (including upgrades, out-of-memory kills, and kernel patches).
@@ -184,6 +215,14 @@ With a distributed cache of N nodes and uniform key distribution, the loss of on
 | 50      | 2 %           | 0.95 x 0.98 = 93.1 %  | 6.9 %      | 690 per s     |
 
 With 3 nodes, one failure sends 3.7 times capacity to the database. With 10 nodes, 1.45 times. Only at about 20 nodes does the loss of a node fit within capacity (and the database has no headroom then). The lesson: **more, smaller nodes reduce the blast radius** of a single failure, and replicas (a standby holding a copy of each shard) reduce it further, at the cost of memory. Capacity planning must include the single-failure case, as the earlier chapter, Workloads, working sets and capacity, emphasised. (This calculation is approximate: the lost keys on a hot node may be disproportionately hot, so the real impact can be worse.)
+
+```mermaid
+xychart-beta
+  title "Database load after losing one node (capacity 1,000)"
+  x-axis ["3 nodes", "10 nodes", "20 nodes", "50 nodes"]
+  y-axis "Queries per second" 0 --> 4000
+  bar [3670, 1450, 975, 690]
+```
 
 ### 3.4 How fast does a cache warm up?
 
@@ -214,6 +253,15 @@ f  <=  C_available / (R * m_t)
 ```
 
 With R = 10,000, C_available = 800 (leaving 200 for other traffic), and m_t = 1 at the start (fully cold): f <= 800 / 10,000 = 8 percent. As the cache warms to m_t = 0.5, f can be 16 percent; at m_t = 0.2, 40 percent; at m_t = 0.05, 100 percent. Implementation: hash users or requests into buckets and admit buckets progressively (the others receive a degraded response or are served from another region), or use a load balancer weight ramp for a new cluster. This is "slow start" in load-balancer vocabulary, applied to the cache.
+
+| Miss ratio m     | Admitted fraction f |
+| ---------------- | ------------------- |
+| 1.0 (fully cold) | 8 percent           |
+| 0.5              | 16 percent          |
+| 0.2              | 40 percent          |
+| 0.05             | 100 percent         |
+
+> **Key idea:** admit traffic only as fast as the origin can absorb the misses. The hit ratio rises, so the admitted share can rise with it.
 
 Admitting a **consistent subset of users** (hash of user id) rather than random requests has a nice property: the same users keep hitting the same keys, so the cache warms for the right keys rather than being sprayed.
 

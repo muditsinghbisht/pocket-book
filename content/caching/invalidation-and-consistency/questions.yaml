@@ -199,3 +199,181 @@ questions:
       - What exact invariant are you trying to check?
       - How do you tell "not yet invalidated" from "never will be"?
       - Which race lets an old value overwrite a new one, and how do versions stop it?
+
+  - id: invalidation-backstop-01
+    level: beginner
+    type: mcq
+    q: >-
+      Your service deletes the cache entry on every write. Why should every
+      entry still have a TTL?
+    options:
+      - The TTL makes deletes faster
+      - The TTL raises the hit ratio above what deletes allow
+      - The TTL bounds how long an entry stays wrong when a delete is lost or raced
+      - Caches refuse to store entries that have no TTL
+    answer: 2
+    explain: >-
+      Deletes can be lost (a crash, a dropped message) or defeated by a race
+      (a slow reader refilling an old value). The TTL is the backstop that
+      turns a possibly permanent error into a bounded one. It does not speed
+      up deletes and, if anything, costs some hit ratio.
+
+  - id: invalidation-order-01
+    level: beginner
+    type: mcq
+    q: >-
+      With cache-aside and delete-on-write, which order should the writer use?
+    options:
+      - Update the database, then delete the cache entry
+      - Delete the cache entry, then update the database
+      - Update both at the same time from two threads
+      - Delete the entry twice and skip the database
+    answer: 0
+    explain: >-
+      If you delete first, a reader can miss, read the old row and re-cache it
+      before the write lands, which leaves a stale value with certainty.
+      Writing the database first leaves only the narrow slow-reader race.
+
+  - id: invalidation-hitratio-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A key is requested as a Poisson process at 0.02 requests per second.
+      Using h = lambda T / (1 + lambda T), what TTL in seconds gives a per-key
+      hit ratio of 80 percent?
+    answer: 200
+    tolerance: 0
+    unit: seconds
+    explain: >-
+      h = 0.8 means lambda T / (1 + lambda T) = 0.8, so lambda T = 4. Then
+      T = 4 / 0.02 = 200 seconds. Tail keys need long TTLs to be useful at
+      all.
+    hints:
+      - Solve h = x / (1 + x) for x = lambda T first.
+      - For h = 0.8, x is 4.
+
+  - id: invalidation-jitter-01
+    level: intermediate
+    type: numeric
+    q: >-
+      900,000 keys are loaded in the same second with a 600 s TTL. You add
+      jitter so TTLs are spread uniformly over 480 to 600 s. At what rate, in
+      keys per second, do the keys now expire?
+    answer: 7500
+    tolerance: 0
+    unit: keys per second
+    explain: >-
+      The expiries spread over a window of 600 - 480 = 120 s, so the rate is
+      900,000 / 120 = 7,500 keys per second. Without jitter all 900,000 expire
+      in the same instant.
+    hints:
+      - How wide is the window over which expiries are spread?
+      - Divide the number of keys by the width of that window.
+
+  - id: invalidation-replicafill-01
+    level: intermediate
+    type: mcq
+    q: >-
+      Writes go to a primary and cache fills read a replica that lags by about
+      2 seconds. The writer deletes the cache key right after each commit, yet
+      users sometimes see old data until the TTL fires. What is the best fix?
+    options:
+      - Lengthen the TTL so that fewer fills happen
+      - Fill from the primary, or make the fill versioned so an older version is rejected
+      - Delete the key a second time immediately after the first delete
+      - Move the cache to the same machine as the replica
+    answer: 1
+    explain: >-
+      A reader that misses right after the delete reads the lagging replica
+      and caches the old row (race B). Filling from the primary, or carrying
+      a version so the cache refuses older data, removes the cause. An
+      immediate second delete does not help because the stale fill happens
+      after it, and a longer TTL only prolongs the damage.
+
+  - id: invalidation-tombstone-01
+    level: advanced
+    type: mcq
+    q: >-
+      A cache accepts versioned sets only if the new version is higher than the
+      stored one. A writer deletes key x (version 8) and a slow reader then
+      tries to fill x with version 7. Why can the stale fill still succeed, and
+      what prevents it?
+    options:
+      - Deletes are slower than sets, so keep the delete asynchronous
+      - Versions can only go up in the database, so the cache cannot be wrong
+      - Sets are atomic, so the race cannot occur at all
+      - The key is absent after a delete, so there is no version to compare with; leave a short-lived tombstone carrying version 8
+    answer: 3
+    explain: >-
+      After a plain delete the cache holds nothing to compare with, so any
+      fill is accepted. A tombstone stores the deletion's version for a while
+      so an older fill is rejected. It must outlive the longest read-miss
+      latency plus replica lag, otherwise the race reopens.
+
+  - id: invalidation-pubsub-01
+    level: advanced
+    type: mcq
+    q: >-
+      App servers keep in-process caches and learn about changes over
+      fire-and-forget pub/sub. One server loses its connection for 30 seconds
+      and reconnects. What should it do on reconnect?
+    options:
+      - Nothing, because it will receive the missed messages
+      - Assume it missed messages and flush or revalidate its local cache, with a short TTL as backstop
+      - Raise its local TTL so that it needs fewer messages
+      - Subscribe a second time to the same channel
+    answer: 1
+    explain: >-
+      Fire-and-forget pub/sub has no replay, so messages published while the
+      subscriber was disconnected are gone. A stale local entry would live
+      until its TTL. Flushing or revalidating on reconnect, plus a short TTL,
+      bounds the damage.
+
+  - id: invalidation-ryw-01
+    level: staff
+    type: mcq
+    q: >-
+      Users edit their profile, are redirected to it, and sometimes see the
+      old data because the next request hits a different app server whose
+      cache entry has not been invalidated yet. Pipeline p99 lag is 4 s. Which
+      design fixes read-your-writes across servers most generally?
+    options:
+      - Sticky sessions only, because failover never happens
+      - A cache TTL of 1 second for all data
+      - Return the write's version in a cookie; treat cached entries older than it as misses and fill from a source at least that fresh
+      - Send every read to the primary database
+    answer: 2
+    explain: >-
+      A version token works across servers and replicas and costs extra source
+      reads only for users who just wrote. Sticky sessions break at failover
+      or rebalancing, a global 1-second TTL hurts the hit ratio for everyone
+      and still leaves a window, and reading everything from the primary
+      defeats the cache.
+
+  - id: invalidation-design-01
+    level: staff
+    type: free
+    q: >-
+      Design cache handling for user permissions, where a revocation must take
+      effect within a few seconds, but the permission check runs on every
+      request. State the staleness budget, the mechanisms and the failure
+      handling.
+    answer: >-
+      Budget: a revocation is visible within about 5 seconds in 99.9 percent
+      of cases and never later than the TTL. Mechanisms: event-driven
+      invalidation from the commit log (CDC or an outbox) so every writer is
+      covered, deleting or version-setting the permission keys, plus a very
+      short TTL (for example 30 to 60 s) as a backstop with jitter. Close the
+      fill race with versioned fills or leases and fill from the primary,
+      not a lagging replica. Add a heartbeat and lag alerts for the pipeline,
+      and a periodic reconciliation or sampling probe. Sensitive actions
+      (changing a password, moving money) bypass the cache and read the
+      source of truth.
+    explain: >-
+      A strong answer states a numeric budget, layers a prompt mechanism with
+      race closure and a TTL backstop, monitors the pipeline, and
+      identifies the paths where no staleness is acceptable.
+    hints:
+      - What number would the security team accept for revocation delay?
+      - What bounds the damage if an event is lost?
+      - Which operations should never trust the cache?

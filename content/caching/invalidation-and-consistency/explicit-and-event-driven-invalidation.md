@@ -37,6 +37,21 @@ When a row changes, the writer can do one of two things to the cached copy: dele
 
 A numerical illustration of the cost of delete: a key read 100 times per second, written once per minute. Each delete causes one refill; if refills are coalesced, that is 1 backend read per 6,000 requests, a miss ratio of 0.017 percent from invalidation. Negligible. If the key is written 10 times per second and read 100 per second, up to 10 of every 100 reads can miss, a 10 percent miss ratio from invalidation alone, and update-on-write (or not caching) becomes worth considering. The ratio of write rate to read rate, from the chapter When to cache and when not to, decides.
 
+|                          | Update on write                | Delete on write              |
+| ------------------------ | ------------------------------ | ---------------------------- |
+| Ordering between writers | Races, needs versions          | Harmless, both deletes agree |
+| Work per write           | Compute the new representation | O(1)                         |
+| Cost                     | Wasted for unread keys         | One extra miss per write     |
+| Best for                 | Hot keys, expensive refills    | The default                  |
+
+```mermaid
+xychart-beta
+  title "Misses caused by invalidation (reads 100 per s)"
+  x-axis "Write rate" ["1 per minute", "10 per second"]
+  y-axis "Miss ratio (percent)" 0 --> 12
+  bar [0.017, 10]
+```
+
 ### 2.2 The order of operations
 
 For delete-on-write: **update the database first, then delete the cache entry.** If you delete first and then update, a reader can arrive between the two steps, miss, read the old row and re-cache it, leaving stale data with certainty rather than as a race:
@@ -49,6 +64,22 @@ For delete-on-write: **update the database first, then delete the cache entry.**
 | t3   | Writer | writes DB: v2      | v2  | **v1** |
 
 With update first, then delete, the stale outcome requires an unlucky reader that straddles both steps (race A of the previous chapter). So "write then delete" is far better but not perfect.
+
+```mermaid
+sequenceDiagram
+  participant W as Writer
+  participant R as Reader
+  participant DB
+  participant C as Cache
+  W->>C: delete x (wrong order)
+  R->>C: get x
+  C-->>R: miss
+  R->>DB: read x
+  DB-->>R: v1
+  R->>C: set x = v1
+  W->>DB: write x = v2
+  Note over DB,C: DB v2, cache v1, certain rather than unlucky
+```
 
 ## 3. Closing the fill-versus-invalidate race
 
@@ -67,6 +98,21 @@ void write(Key k, Value v) {
 ```
 
 Replaying race A with delete 2: the stale fill at t4 is removed at t3 + 1 s, so the stale value lives for about 1 second rather than a whole TTL. It is cheap, requires no cache support, and improves things greatly, but it is a heuristic. If a reader stalls for longer than the delay (a long GC pause, a congested network), the stale fill still wins. It also adds scheduling infrastructure with its own failure modes: a crash between the first and the second delete loses the second one. Treat it as a mitigation, with the TTL still as the final backstop.
+
+```mermaid
+sequenceDiagram
+  participant R as Reader
+  participant W as Writer
+  participant DB
+  participant C as Cache
+  R->>DB: read x (v1)
+  W->>DB: write x = v2
+  W->>C: delete 1
+  R->>C: set x = v1 (stale fill)
+  Note over C: stale for about 1 s
+  W->>C: delete 2, one second later
+  Note over C: stale fill removed, next read refills v2
+```
 
 ### 3.2 Leases
 
@@ -93,7 +139,29 @@ else:
 
 Replaying race A: the writer writes v2 and does not delete but sets (v2, value2). The slow reader then tries `set_if_newer(x, v1, value1)`; the cache holds v2, so the set is rejected. Replaying the two-writer race: W1 sets (v1), W2 sets (v2) in either order; the final state is v2 in both orderings because the older one is rejected. Versioned writes are the one technique that makes update-on-write safe against reordering.
 
+```mermaid
+sequenceDiagram
+  participant R as Slow reader
+  participant W as Writer
+  participant C as Cache
+  R->>C: read x and version v1 from DB, pause
+  W->>C: set_if_newer x, v2
+  C-->>W: OK
+  R->>C: set_if_newer x, v1
+  C-->>R: REJECTED, cache holds v2
+```
+
 There is a subtlety: a **delete** carries no version, so a stale fill after a delete is still accepted. To protect against that, deletes must leave a **tombstone** carrying the version of the deletion for a while (the stale fill with an older version is then rejected). Tombstones are the price of safe deletes and must themselves expire; if they are gone before the slow reader returns, the race reopens.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Absent
+  Absent --> Filled: fill with version
+  Filled --> Tombstone: delete carrying version v
+  Tombstone --> Tombstone: older fill rejected
+  Tombstone --> Filled: fill newer than v
+  Tombstone --> Absent: tombstone expires
+```
 
 ## 4. Versioned (generational) keys
 
@@ -117,6 +185,14 @@ To invalidate many keys at once (everything belonging to tenant 7, or every quer
 ```
 gen    = cache.get("gen:tenant:7")                   // e.g. 12
 key    = "t7:g" + gen + ":report:2024-05"
+```
+
+```mermaid
+flowchart LR
+  G["gen:tenant:7 bumped 12 to 13"] --> N["New lookups use g13 keys"]
+  N --> M["Miss, refill under g13"]
+  G --> O["g12 keys unreachable"]
+  O --> E["Aged out by TTL or LRU"]
 ```
 
 Bumping `gen:tenant:7` to 13 invalidates all of the tenant's entries in O(1), without enumerating them: every lookup now uses `g13` keys, so the old `g12` entries become unreachable and will age out via TTL or eviction. This neatly solves the dependency-tagging problem described earlier, at the cost of one additional lookup per read (the generation key; it can be cached in-process for a very short time to reduce the cost) and some garbage: old generations occupy memory until evicted. With a large memory budget and LRU, the orphaned entries are the first to go, because nobody touches them.
@@ -165,6 +241,25 @@ Be careful about the delivery semantics of the pub/sub system. Redis pub/sub, fo
 
 A pipeline of four or five components has failures at each joint. Learn this catalogue; it also serves as a design checklist.
 
+| Failure           | Symptom                        | Main mitigation                   |
+| ----------------- | ------------------------------ | --------------------------------- |
+| Lag               | Old entry visible after commit | Alert on lag, fill with a version |
+| Loss              | Stale until TTL                | At-least-once delivery, TTL       |
+| Duplication       | Needless extra miss            | Idempotent delete                 |
+| Reordering        | Older update wins              | Version check                     |
+| Premature delete  | Refill reads old data          | Delay consumer, fill from primary |
+| Poison message    | Partition blocked, all stale   | Dead-letter queue                 |
+| Mapping bug       | One derived key stale          | Tests per key shape               |
+| Silent disconnect | Looks like a quiet system      | Heartbeat event                   |
+
+```mermaid
+flowchart LR
+  A["Commit"] -->|"lag"| B["Log and CDC"]
+  B -->|"loss, poison"| C["Bus"]
+  C -->|"duplication, reordering"| D["Consumer"]
+  D -->|"mapping bug, premature delete"| E[("Cache")]
+```
+
 **1. Lag.** Between the commit and the delete, readers can still see the old entry. The lag distribution has a heavy tail; plan for the p99 and for spikes. A bulk update (a migration touching ten million rows) produces ten million events, and the invalidation stream lags by minutes while it drains. Worse, readers that miss after a delete but before replication has caught up can refill stale data from a lagging replica (race B). Mitigation: fill from the primary or with a version; monitor lag as a first-class metric and alert when it exceeds the staleness budget.
 
 **2. Loss.** A message is dropped because of at-most-once delivery, a consumer crash before acknowledgement without replay, a retention window that expired during an outage, or an operator resetting offsets. The cache stays stale until the TTL. Mitigation: at-least-once delivery with durable offsets; and always a TTL.
@@ -190,6 +285,12 @@ Suppose the invalidation pipeline has a median lag of 200 ms and a p99 of 5 s, w
 - Lost invalidations per day: 1,000,000 / 10,000 = 100. Each of these leaves a stale entry for up to 300 s (the TTL), though only if the entry is resident and read in that window.
 - Exposure from lag: for the 1 percent of updates with lag above 5 s, readers see stale data for more than 5 s: 10,000 updates per day.
 - Worst-case staleness bound: max(lag tail, TTL) = 300 s in the loss case.
+
+```mermaid
+pie title Updates per day: where staleness comes from
+  "Lag above 5 s" : 10000
+  "Lost invalidation" : 100
+```
 
 If the staleness budget is 60 seconds, this design violates it for lost messages. Options: reduce the TTL to 60 s (costing hit ratio), reduce the loss rate with at-least-once delivery (making losses very rare), or add a reconciliation job that periodically compares and repairs. The arithmetic helps pick the cheapest.
 

@@ -23,6 +23,20 @@ The previous chapter, Cache stampede mechanics, showed that the damage of a stam
 2. **Avoid the miss**: keep serving something (the old value) while a refresh happens in the background, or refresh _before_ expiry, so that no request ever sees an empty cache.
 3. **Spread out**: make expiry events non-simultaneous so that no instant has a big herd (jitter).
 
+```mermaid
+mindmap
+  root((Mitigations))
+    Coalesce
+      single-flight
+      distributed lock
+    Avoid the miss
+      serve stale
+      early refresh
+      pre-warm
+    Spread
+      jittered TTL
+```
+
 The best production systems combine one technique from each family. Here is a map of this chapter.
 
 | Technique                      | Family   | Latency for waiters    | Origin load per expiry | Main risk                      |
@@ -41,6 +55,22 @@ The best production systems combine one technique from each family. Here is a ma
 Maintain a map from key to an in-progress load. The first request that misses starts the load and registers a future (promise). Any request that misses while a load for the same key is registered does not start its own; it waits for the registered future. When the load completes, all waiters receive the result and the registration is removed.
 
 In Go this pattern is packaged as the `singleflight` package. In Java, `ConcurrentHashMap.computeIfAbsent` with a `CompletableFuture` gives it in a few lines. Libraries such as Caffeine do this internally for loading caches: concurrent `get` calls for the same absent key invoke the loader once.
+
+```mermaid
+sequenceDiagram
+  participant A as Request A
+  participant B as Request B
+  participant M as In-flight map
+  participant DB
+  A->>M: miss, no load registered
+  M-->>A: you are the loader
+  A->>DB: query
+  B->>M: miss, load registered
+  M-->>B: wait for A's future
+  DB-->>A: result
+  A->>M: fill cache, remove entry
+  M-->>B: same result
+```
 
 ### 2.2 Java implementation
 
@@ -120,6 +150,14 @@ A key at 1,000 requests per second, fill S = 200 ms, served by 20 application in
 
 That is a tenfold reduction, but the origin still sees 20 identical queries. With 500 instances the figure would be 500 queries, and in the limit the herd is at most the _number of instances_, not the number of requests. For fleets of hundreds of servers, you want coalescing that is global, which leads to the distributed lock.
 
+```mermaid
+xychart-beta
+  title "Origin queries per expiry (1,000 per s, S = 200 ms)"
+  x-axis ["No coalescing", "Per instance (20)", "Global lock"]
+  y-axis "Identical queries" 0 --> 220
+  bar [200, 20, 1]
+```
+
 Latency for the waiters is up to S = 200 ms, but this is an upper bound: the average waiter arrived midway through the fill and waits about 100 ms. This is far better than a database queue in which every one of the 200 queries takes 2.3 s to drain (section 4.2 of the previous chapter).
 
 ## 3. A distributed lock around the refill
@@ -134,6 +172,22 @@ SET lock:product:42 <unique-token> NX PX 5000
 
 `NX` means set only if the key does not exist; `PX 5000` means expire after 5,000 ms. If the command succeeds, you are the leader: recompute, fill the cache, and release the lock. If it fails, someone else is already refilling; you either wait and re-check the cache, or serve a stale value if you have one.
 
+```mermaid
+sequenceDiagram
+  participant L as Leader
+  participant W as Waiter
+  participant R as Cache
+  participant DB
+  L->>R: SET lock NX PX 5000
+  R-->>L: OK
+  W->>R: SET lock NX PX 5000
+  R-->>W: nil (held)
+  L->>DB: query
+  L->>R: set data, then compare-and-delete lock
+  W->>R: poll data (20 to 60 ms jitter)
+  R-->>W: value
+```
+
 ### 3.2 Safe release and the timeout
 
 The lock must have an **expiry**. Without one, a leader that crashes after acquiring the lock leaves it forever, and nobody can refill the key. The timeout must be chosen carefully:
@@ -144,6 +198,21 @@ The lock must have an **expiry**. Without one, a leader that crashes after acqui
 Choose the timeout as a generous multiple of the typical fill time but short enough that a crash is tolerable, and use p99.9 fill latency as a guide. With a typical S = 200 ms, p99.9 = 1.5 s, a lock timeout of 3 to 5 seconds is reasonable.
 
 To avoid releasing someone else's lock, store a **unique token** (random value) as the lock value and release only if the stored value still equals your token. This compare-and-delete must be atomic, so use a small server-side script:
+
+```mermaid
+sequenceDiagram
+  participant A as Leader A (slow)
+  participant R as Cache
+  participant B as Leader B
+  A->>R: SET lock token-A NX PX 5000
+  Note over A: stalls past 5 s
+  Note over R: lock expires
+  B->>R: SET lock token-B NX PX 5000
+  A->>R: DEL lock (no check)
+  Note over R: B's lock deleted by mistake
+  A->>R: compare-and-delete with token-A instead
+  R-->>A: not yours, 0
+```
 
 ```
 -- release.lua: delete the lock only if we still own it
@@ -208,6 +277,8 @@ Instead of making waiters wait, give them something. Keep the old value in the c
 
 Result: zero waiting for users, one origin query per expiry, and graceful degradation if the origin fails. The cost is that users see values up to (soft TTL + refresh time) old, or up to the hard TTL in failure. This is acceptable for most read-mostly data, but not for data with a tight staleness budget.
 
+> **Key idea:** the hard TTL is how long you are willing to serve stale data when the origin is down. The soft TTL is how fresh you want data when it is up.
+
 Two refinements. First, if the entry's _physical_ TTL (hard TTL) passes before any refresh succeeds, you are back to a cold miss, and need coalescing again. A layered defence uses stale serving for the common case and the lock for the rare hard miss. Second, the refresher should have a lease or lock with a timeout so that a crashed refresher is replaced; otherwise the entry would be stale until its hard expiry.
 
 ## 5. Probabilistic early expiration
@@ -233,6 +304,14 @@ P(refresh | t) = exp( -t / (delta * beta) )
 ```
 
 For a request arriving 3 delta before expiry the probability is e^-3 = 0.05; at delta before expiry it is e^-1 = 0.37; at expiry it is 1. The probability rises smoothly as expiry approaches, and it is higher for entries that are expensive to compute (larger delta), which are exactly those that need more lead time.
+
+```mermaid
+xychart-beta
+  title "P(refresh) by time before expiry (delta, beta = 1)"
+  x-axis ["0", "1", "2", "3", "5"]
+  y-axis "Refresh probability (percent)" 0 --> 100
+  line [100, 36.8, 13.5, 5, 0.7]
+```
 
 **Worked example.** lambda = 1,000 requests per second, delta = 0.2 s, beta = 1. The expected number of triggering requests over the final window is the integral of the arrival rate times the probability:
 
@@ -290,6 +369,14 @@ TTL design explained jitter for the synchronized expiry case. In the stampede co
 
 A quick calculation of the benefit: 100,000 keys of moderate popularity (each lambda x S = 0.5 expected redundant fetches), all expiring in the same second: 100,000 × (1 + 0.5) = 150,000 fetches in that second. Spread over a 60-second jitter window: 150,000 / 60 = 2,500 per second. The origin can plan for 2,500 per second; it cannot survive 150,000 in a second.
 
+```mermaid
+xychart-beta
+  title "Fetches per second, 100,000 keys expiring"
+  x-axis ["Same second", "60 s jitter window"]
+  y-axis "Fetches per second" 0 --> 160000
+  bar [150000, 2500]
+```
+
 ## 7. Pre-warming and refresh-ahead
 
 For keys that are known to be hot (the home page, the top 1,000 products, feature flags, configuration), do not wait for requests to refresh them. Run a **background refresher** that recomputes them periodically, a little more often than their TTL, so that they are never absent.
@@ -302,6 +389,14 @@ scheduler.scheduleAtFixedRate(() -> {
         cache.set(k, v, Duration.ofSeconds(60));
     }
 }, 0, 45, TimeUnit.SECONDS);
+```
+
+```mermaid
+timeline
+  title 60 s TTL key refreshed every 45 s
+  0 s : Fill : TTL runs to 60 s
+  45 s : Background refresh : TTL reset to 105 s
+  90 s : Background refresh : TTL reset to 150 s
 ```
 
 Costs and caveats:
@@ -336,6 +431,8 @@ flowchart TD
 ```
 
 The diagram combines three techniques: the stale path serves immediately and triggers one refresh, the hard miss path elects a leader by lock, and the waiters poll briefly. Each box has a bounded wait or a bounded retry.
+
+> **Key idea:** pick one technique from each family: spread (jitter), avoid the miss (stale or early refresh), and coalesce (single-flight, then a lock for large fleets).
 
 ## 9. Common pitfalls
 

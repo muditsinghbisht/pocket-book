@@ -26,6 +26,20 @@ A cache in front of a database is a distributed system with at least two replica
 
 We use informal definitions, enough for design work.
 
+```mermaid
+flowchart LR
+  A["Strong: one logical copy"] -->|"cheaper, more surprises"| B["Session guarantees: your own view"]
+  B --> C["Bounded staleness: at most delta old"]
+  C --> D["Eventual: converges, no timing promise"]
+```
+
+| Model              | Reader sees                       | Typical cache mechanism    |
+| ------------------ | --------------------------------- | -------------------------- |
+| Strong             | Latest committed write            | Bypass the cache           |
+| Session guarantees | Own writes, never going backwards | Version tokens, stickiness |
+| Bounded staleness  | At most delta old                 | Invalidation plus TTL      |
+| Eventual           | Something, eventually             | TTL only                   |
+
 ### 2.1 Strong consistency (linearizability)
 
 A system is **linearizable** if every operation appears to take effect atomically at some single instant between its start and its completion, and the instants are consistent with real time. In practice: after a write completes, every subsequent read, by anyone, anywhere, sees that write or a later one. There is one logical copy.
@@ -68,6 +82,8 @@ sequenceDiagram
   Note over U: read-your-writes violated
 ```
 
+> **Key idea:** users forgive stale data about the world far more than stale data about themselves. Fix read-your-writes and monotonic reads first.
+
 ## 3. Providing read-your-writes with a cache
 
 There are several implementation techniques, in order of increasing generality.
@@ -78,11 +94,41 @@ After a user writes an object, set a short-lived marker (a cookie, or a session 
 
 Cost: a small number of extra database reads, only for users who just wrote, and only for their own objects. Since writes are rare compared to reads, the added load is small. Suppose 1 percent of requests are writes and each writer bypasses the cache for 10 seconds with an average of 2 reads in that window: the extra database reads are about 0.01 × 2 = 0.02 per request, a two percent increase in database traffic. That is cheap for a clearly visible improvement.
 
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant S as App server
+  participant C as Cache
+  participant P as Primary DB
+  U->>S: save profile
+  S->>P: write
+  S-->>U: ok, set marker for 10 s
+  U->>S: reload profile
+  S->>P: marker present, skip cache and read primary
+  P-->>S: new profile
+  Note over S,C: after 10 s the user rejoins the cache path
+```
+
 ### 3.2 Write-through for the writer's own view
 
 Write the new value to the cache (via a versioned set) in addition to deleting or updating on the database. The writer then sees its own change on the next read, provided the versioned set cannot be overwritten by an older value. This works best with the version discipline from the previous lesson.
 
 ### 3.3 Version tokens
+
+```mermaid
+sequenceDiagram
+  participant U as Client
+  participant S as Server
+  participant C as Cache
+  participant P as Primary
+  S-->>U: cookie minVersion = 7 (after write)
+  U->>S: read with minVersion 7
+  S->>C: get entry
+  C-->>S: version 6, older than token
+  S->>P: read at version 7 or newer
+  P-->>S: version 7
+  S->>C: refill version 7
+```
 
 Return to the client the **version (or log position)** of its last write, for instance as a cookie. On each read, the server compares the cached entry's version with the client's token: if the entry is older than the token, treat it as a miss, read from the source (which must be at least that fresh, such as the primary or a replica that has reached that log position) and refill. This provides read-your-writes _across servers and replicas_, at the cost of carrying a token and storing versions in the cache entries. It is the most general technique and is used in various forms in replicated databases and in caching systems built on top of them.
 
@@ -92,6 +138,19 @@ Monotonic reads fail when consecutive reads of one session go to different copie
 
 1. **Stickiness.** Route a session to the same cache node and the same replica for its reads (sticky sessions, consistent hashing on session id). Then the session sees a single copy that only moves forward. The cost: less flexibility in load balancing, and a failover can still reset the view.
 2. **Version floors.** The client (or session) remembers the highest version it has observed for each object (or a global high-water mark) and rejects any entry whose version is lower, treating it as a miss. Combined with the version-token mechanism above, this gives both properties.
+
+```mermaid
+sequenceDiagram
+  participant U as Client
+  participant A as Cache node A (v5)
+  participant B as Cache node B (v4)
+  U->>A: read
+  A-->>U: v5
+  U->>B: read (no stickiness)
+  B-->>U: v4
+  Note over U: value goes backwards
+  U->>A: sticky routing: always node A
+```
 
 ## 5. The cache-aside race, step by step, and the lease solution
 
@@ -152,6 +211,16 @@ sequenceDiagram
 
 The cache is correct at the end. The lease converts a time-of-check/time-of-use race into a conditional write: "install this only if nothing invalidated the key since you were told to fill it". It is the cache-side analogue of an optimistic concurrency check.
 
+```mermaid
+stateDiagram-v2
+  [*] --> NoLease
+  NoLease --> Leased: miss, token issued
+  Leased --> Filled: set with valid token
+  Leased --> NoLease: delete cancels token
+  Leased --> NoLease: lease TTL expires
+  Filled --> NoLease: delete or expiry
+```
+
 This is the mechanism described in the paper "Scaling Memcache at Facebook", where memcached hands out a lease token on a miss and rejects a `set` carrying a token invalidated by a delete. Redis offers building blocks (optimistic transactions with `WATCH`, or server-side scripts) with which one can implement the same pattern, and a simple home-made version is to store a per-key "invalidation counter" and reject fills whose observed counter differs.
 
 ### 5.3 A home-made version with a counter
@@ -173,6 +242,22 @@ The reader snapshots the epoch before reading the database; the writer bumps it 
 ### 5.4 Leases also tame stampedes
 
 Leases have a second benefit. The cache can **rate-limit lease issuance per key**: when a lease for key k has been handed out recently, other readers who miss on k are not given a lease. Instead they are told to wait briefly and retry (by which time the lease holder will probably have filled the key), or they are given a stale value if the cache kept one. That limits concurrent refills of a hot missing key to one, which is the heart of request coalescing and is treated in the stampede chapters. The Facebook paper reports using a limit of one token per key at a time interval on the order of seconds and observing a large reduction in database queries during such events; we omit exact figures since they depend on workload.
+
+```mermaid
+sequenceDiagram
+  participant R1 as Reader 1
+  participant R2 as Reader 2
+  participant C as Cache
+  participant DB
+  R1->>C: get with lease
+  C-->>R1: miss, token T1
+  R2->>C: get with lease
+  C-->>R2: miss, wait and retry (no token)
+  R1->>DB: read
+  R1->>C: set with T1
+  R2->>C: retry after jittered backoff
+  C-->>R2: hit
+```
 
 ### 5.5 Lease failure modes
 
@@ -197,6 +282,13 @@ Then:
 - If invalidation can fail: Δ = T_ttl (the backstop), with probability p_loss per write.
 
 A design that states "Δ = 5 s with probability 99.99 percent and Δ ≤ 300 s always" is a precise, testable statement. Compare with the vaguer "the cache is eventually consistent".
+
+```mermaid
+flowchart TD
+  W["Update committed"] --> Q{"Invalidation succeeds?"}
+  Q -->|"yes, almost always"| A["Staleness about T_lag (for example 3 s)"]
+  Q -->|"no, probability p_loss"| B["Staleness up to T_ttl (for example 120 s)"]
+```
 
 **Worked example.** Product prices. Pipeline lag p99 = 2 s, replica lag p99 = 1 s, TTL = 120 s, loss and race probability per update = 0.0001. For 99 percent of updates, staleness is at most about 3 s (2 + 1). For one in 10,000 updates the stale entry may live up to 120 s. The tail is the TTL. If the product team's budget is 30 seconds for "almost all" and 5 minutes absolute, the design passes: Δ_typical = 3 s < 30 s, Δ_max = 120 s < 300 s. If the budget were 60 seconds absolute, the TTL (120 s) would need to be halved or the loss rate reduced.
 
@@ -237,6 +329,17 @@ Value read(Key k, SessionToken s) {
 ```
 
 Each line answers one of the failure modes we have discussed: the version floor handles session anomalies; the soft expiry avoids waiting; the lease closes the fill race and bounds concurrent refills; the jittered TTL gives the backstop and avoids synchronization.
+
+```mermaid
+flowchart TD
+  G["cache.get"] --> V{"Hit and version at least session floor?"}
+  V -->|"yes, fresh"| F["Return value"]
+  V -->|"yes, soft-expired"| S["Return value, refresh once in background"]
+  V -->|"no"| L["Acquire lease"]
+  L --> D["Read DB with version"]
+  D --> W["Set if lease valid, jittered TTL"]
+  W --> O["Advance session floor, return"]
+```
 
 In C++ the same structure maps onto an `std::optional<Entry>`, a lease token returned from the cache client, and a `std::future` for the asynchronous refresh.
 
