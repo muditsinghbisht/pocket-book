@@ -9,6 +9,7 @@ import {
 import { deriveQuiz } from "./content/quiz.ts";
 import type { PracticeQuestion, TopicNode } from "./content/schema.ts";
 import { Mdx } from "./Mdx.tsx";
+import { notFoundArt } from "./not-found-art.ts";
 import { link } from "./route.ts";
 
 export const labels: Record<Section, [long: string, short: string]> = {
@@ -128,18 +129,53 @@ export function Home({ domains }: { domains: TopicNode[] }) {
   );
 }
 
-export function NotFound() {
+const button =
+  "inline-flex min-h-12 items-center justify-center rounded-xl px-6 font-semibold focus-visible:outline-2";
+
+/** `path` is shown as text (React escapes it); `closest` is a valid route above it. */
+export function NotFound({
+  path,
+  closest,
+}: {
+  path: string;
+  closest?: { href: string; label: string };
+}) {
   return (
-    <>
-      <h1 className="text-2xl font-bold">Not found</h1>
-      <p className="mt-2">
-        This page does not exist.{" "}
-        <a className="text-primary underline" href={link({ path: "" })}>
-          Go to the start
-        </a>
-        .
+    <section className="mx-auto flex max-w-md flex-col items-center py-6 text-center sm:py-12">
+      <div
+        className="w-56 sm:w-64"
+        dangerouslySetInnerHTML={{ __html: notFoundArt }}
+      />
+      <p className="mt-6 text-sm font-semibold tracking-wide text-primary uppercase">
+        Error 404
       </p>
-    </>
+      <h1 className="mt-1 text-3xl font-bold tracking-tight text-balance">
+        This page fell out of the book
+      </h1>
+      <p className="mt-3 text-muted">
+        We checked every chapter, but{" "}
+        <code className="rounded border border-line bg-subtle px-1.5 py-px font-mono text-[0.85em] break-all text-fg">
+          {path}
+        </code>{" "}
+        is not in PocketBook.
+      </p>
+      <div className="mt-8 flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+        <a
+          className={`${button} bg-primary text-primary-fg hover:opacity-90`}
+          href={link({ path: "" })}
+        >
+          Back to home
+        </a>
+        {closest && (
+          <a
+            className={`${button} border border-line bg-surface hover:bg-subtle`}
+            href={closest.href}
+          >
+            {closest.label}
+          </a>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -299,9 +335,9 @@ export function SectionView({
 
   switch (section) {
     case "lessons": {
+      // An unknown item never gets here: App resolves it to NotFound.
       const i = node.lessons.findIndex((l) => l.id === item);
-      if (item && i < 0) return <NotFound />;
-      if (!item)
+      if (i < 0)
         return (
           <>
             {title}
@@ -340,7 +376,6 @@ export function SectionView({
     }
     case "case-studies": {
       const cs = node.caseStudies.find((c) => c.id === item);
-      if (item && !cs) return <NotFound />;
       if (!cs)
         return (
           <>

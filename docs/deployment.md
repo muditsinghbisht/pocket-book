@@ -86,7 +86,14 @@ If the console does not apply the bucket policy for you, add it to the bucket:
 }
 ```
 
-Optional: add custom error responses so a missing page shows something friendly. S3 returns 403 (not 404) for missing keys when the caller cannot list the bucket.
+Then add custom error responses so a missing page shows the build's `404.html`. With OAC, S3 returns 403 (not 404) for a missing key because CloudFront cannot list the bucket, so map both codes. Distribution → **Error pages** → **Create custom error response**, once for each of **403: Forbidden** and **404: Not Found**:
+
+- **Error caching minimum TTL**: `60` seconds, so a page that gets deployed later shows up quickly.
+- **Customize error response**: Yes.
+- **Response page path**: `/404.html`.
+- **HTTP response code**: `404: Not Found`.
+
+`404.html` is standalone (inline CSS and SVG, no app scripts, `noindex`) and links to `/`, so it works at any depth such as `/caching/foo`. The deploy uploads it with the other pages, with `no-cache`.
 
 ## 5. DNS
 

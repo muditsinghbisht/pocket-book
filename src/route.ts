@@ -6,10 +6,48 @@
 // Section names are reserved (the content build rejects them as node ids), so the
 // first section-name segment ends the node path.
 import { useMemo, useSyncExternalStore } from "react";
-import { sections, type Section } from "./content/model.ts";
+import { isQuizQuestion, sections, type Section } from "./content/model.ts";
+import type { TopicNode } from "./content/schema.ts";
 
 /** `path` is the full node path ("caching/eviction"); "" is the home page. */
 export type Route = { path: string; section?: Section; item?: string };
+
+export function find(nodes: TopicNode[], path: string): TopicNode | undefined {
+  for (const n of nodes) {
+    if (n.path === path) return n;
+    if (path.startsWith(n.path + "/")) return find(n.children, path);
+  }
+}
+
+/** Ids a section's `item` may name; sections not listed take no item. */
+const itemIds = (n: TopicNode, s: Section) => {
+  const items: Partial<Record<Section, { id: string }[]>> = {
+    lessons: n.lessons,
+    "case-studies": n.caseStudies,
+    practice: n.questions.filter((q) => !isQuizQuestion(q)),
+  };
+  return items[s]?.map((x) => x.id) ?? [];
+};
+
+/**
+ * The node a (non-home) route shows. If any part of the route is unknown,
+ * `node` is undefined and `closest` is the deepest valid route above it, if any.
+ */
+export function resolve(
+  nodes: TopicNode[],
+  { path, section, item }: Route,
+): { node?: TopicNode; closest?: { node: TopicNode; section?: Section } } {
+  const node = find(nodes, path);
+  if (node && (!section || !item || itemIds(node, section).includes(item)))
+    return { node };
+  if (node) return { closest: { node, section } };
+  const parts = path.split("/");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const n = find(nodes, parts.slice(0, i).join("/"));
+    if (n) return { closest: { node: n } };
+  }
+  return {};
+}
 
 const isSection = (s: string): s is Section =>
   (sections as readonly string[]).includes(s);

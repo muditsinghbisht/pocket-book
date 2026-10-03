@@ -3,7 +3,7 @@ import domains from "virtual:content";
 import { sections } from "./content/model.ts";
 import type { TopicNode } from "./content/schema.ts";
 import { applyUpdate, dismissUpdate, useUpdateReady } from "./pwa.ts";
-import { link, useRoute } from "./route.ts";
+import { find, link, resolve, useRoute } from "./route.ts";
 import { nextPref, setThemePref, useTheme, type ThemePref } from "./theme.ts";
 import {
   Home,
@@ -14,13 +14,6 @@ import {
   tone,
 } from "./views.tsx";
 
-function find(nodes: TopicNode[], path: string): TopicNode | undefined {
-  for (const n of nodes) {
-    if (n.path === path) return n;
-    if (path.startsWith(n.path + "/")) return find(n.children, path);
-  }
-}
-
 /** Open book with a bookmark; same artwork as public/icon.svg. */
 const Logo = () => (
   <svg viewBox="0 0 64 64" className="size-8 shrink-0" aria-hidden="true">
@@ -30,6 +23,14 @@ const Logo = () => (
     <path d="M40 19.5v11l3-2.2 3 2.2v-11.8z" fill="#fbbf24" />
   </svg>
 );
+
+const safeDecode = (s: string) => {
+  try {
+    return decodeURI(s);
+  } catch {
+    return s;
+  }
+};
 
 const iconBtn =
   "flex size-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-subtle hover:text-fg focus-visible:outline-2";
@@ -132,14 +133,16 @@ const tab =
 
 export default function App() {
   const route = useRoute();
-  const node = route.path ? find(domains, route.path) : undefined;
+  const { node, closest } = route.path ? resolve(domains, route) : {};
   const domain = route.path.split("/")[0];
   const drawer = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     document.title = node
       ? `${route.section ? labels[route.section][0] + ": " : ""}${node.title} | PocketBook`
-      : "PocketBook";
+      : route.path
+        ? "Page not found | PocketBook"
+        : "PocketBook";
     window.scrollTo(0, 0);
   }, [route, node]);
 
@@ -274,7 +277,18 @@ export default function App() {
           {!route.path ? (
             <Home domains={domains} />
           ) : !node ? (
-            <NotFound />
+            <NotFound
+              path={safeDecode(location.pathname + location.hash)}
+              closest={
+                closest && {
+                  href: link({
+                    path: closest.node.path,
+                    section: closest.section,
+                  }),
+                  label: `Go to ${closest.section ? labels[closest.section][0] + ": " : ""}${closest.node.title}`,
+                }
+              }
+            />
           ) : route.section ? (
             <SectionView
               node={node}
