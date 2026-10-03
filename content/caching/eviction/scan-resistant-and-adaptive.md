@@ -30,6 +30,12 @@ A natural question follows: can we get recency's responsiveness and frequency's 
 
 If the cache distinguishes items seen once from items seen at least twice, and protects the latter from being flushed out by a stream of the former, it gains scan resistance almost for free. Every policy in this lesson is an elaboration of this idea.
 
+| Policy             | Evidence it trusts                  | Fooled by                               |
+| ------------------ | ----------------------------------- | --------------------------------------- |
+| LRU                | the most recent access              | scans, loops, one-hit wonders           |
+| LFU                | the access count                    | old popularity that has faded           |
+| Seen once vs twice | whether a second reference happened | little: a second hit is strong evidence |
+
 ## 2. Segmented LRU (SLRU)
 
 **SLRU** divides the cache into two LRU segments:
@@ -49,6 +55,20 @@ flowchart LR
 ```
 
 **Why it resists scans.** A scan only ever populates the probationary segment. Scanned items never receive a second hit, so they are never promoted, and they churn within probationary, evicting each other. The protected segment, which holds the proven hot items, is untouched.
+
+```mermaid
+sequenceDiagram
+  participant R as Requests
+  participant Pb as Probationary
+  participant Pt as Protected
+  R->>Pb: hot key H (miss, new)
+  R->>Pb: H again (hit)
+  Pb->>Pt: promote H
+  R->>Pb: scan keys S1, S2, S3, ...
+  Note over Pb: scan keys only evict each other
+  Note over Pt: H is never touched by the scan
+  R->>Pt: H (hit)
+```
 
 **Parameters.** The split between segments (for example 80 percent protected, 20 percent probationary) is a tuning knob. Too small a protected segment loses hot items to churn; too small a probationary segment gives new items too little time to earn a second hit. SLRU appears in practice in storage systems and, as the main region of the W-TinyLFU design covered in the next lesson, in modern high-performance cache libraries.
 
@@ -71,6 +91,15 @@ Rules:
 
 Typical suggested settings for the paper's evaluation were a fixed fraction of the cache (a quarter or so) for A1in and a history list sized to track roughly half the cache's worth of keys, though these are tunable.
 
+```mermaid
+flowchart TD
+  M[Miss for x] --> Q{x in A1out?}
+  Q -->|yes| Am[Load x into Am, the main LRU]
+  Q -->|no| A1[Load x into A1in, a small FIFO]
+  A1 -->|A1in over capacity| G[Oldest key moves to A1out, data dropped]
+  G -.->|x requested again| Q
+```
+
 ### Worked example: surviving a scan
 
 Total cache capacity 4: A1in holds up to 1 item, Am up to 3, and A1out remembers 2 keys. Trace: `H1 S1 H1 S2 H2 S3 H2 S4 S5 H1 H2` where H items are hot (re-referenced) and S items are scanned once.
@@ -92,6 +121,8 @@ Total cache capacity 4: A1in holds up to 1 item, Am up to 3, and A1out remembers
 The scan items S1 to S5 flowed through A1in and into history without ever disturbing Am. The two hot items, once they showed a second reference within the history window, were protected. Plain LRU with capacity 4 on the same trace evicts H1 when S4 arrives and S3, S4, S5 crowd out the rest, so its final request for H1 misses while H2 hits. Counting the whole trace honestly, LRU scores 3 hits (requests 3, 7 and 11) against 2Q's 2 (requests 10 and 11), because 2Q pays for its caution with misses on the early second references. The benefit shows up as the scan lengthens: 2Q keeps both hot items however many scan items follow, whereas LRU loses them after four scan items.
 
 **Cost.** Three structures, a ghost list of keys (cheap, but still memory and bookkeeping), and parameters to tune (A1in size, A1out size). The ghost list is the key conceptual contribution: it lets the cache remember an item's recent past without paying for its data.
+
+> **Key idea:** a ghost list remembers that an item existed without paying for its data. A second request found in the ghost list is the proof that promotes the item.
 
 ## 4. LRU-K (briefly)
 
@@ -123,6 +154,18 @@ Invariants: |T1| + |T2| ≤ c (the cache), and the total of all four lists is at
 The adaptation step sizes are proportional to the ratio of ghost list sizes, so a regret from a smaller ghost list moves p faster. In the original formulation, on a B1 hit, p increases by 1 if |B1| ≥ |B2|, else by |B2| / |B1|. On a B2 hit, p decreases by 1 if |B2| ≥ |B1|, else by |B1| / |B2|. Values are clamped to [0, c].
 
 ```mermaid
+sequenceDiagram
+  participant C as Client
+  participant A as ARC
+  C->>A: request x
+  A->>A: x found in ghost list B1
+  Note over A: T1 was too small
+  A->>A: raise p by 1 or by B2 size over B1 size, whichever is larger
+  A->>A: REPLACE evicts one resident item
+  A-->>C: x loaded into T2
+```
+
+```mermaid
 stateDiagram-v2
   [*] --> T1: first reference
   T1 --> T2: second reference (hit)
@@ -143,6 +186,14 @@ Suppose c = 100 and currently p = 30, so the policy wants about 30 entries in T1
 - Later, with |B1| = 50 and |B2| = 10, a request hits in B2. Since |B2| < |B1|, the decrement is |B1| / |B2| = 5. p goes from 32 to 27. T2 gets more room.
 
 Intuition for the ratio: if B2 is small but is still producing hits, then each B2 hit is a rarer, stronger signal that T2 is too small, so it earns a large step.
+
+```mermaid
+xychart-beta
+  title "ARC target p over the two ghost hits"
+  x-axis ["start", "after B1 hit", "after B2 hit"]
+  y-axis "p (target size of T1)" 20 --> 40
+  line [30, 32, 27]
+```
 
 **Scan behaviour.** A scan injects fresh keys that enter T1 and then B1 without being hit again; they never produce B1 hits (no repeats), so p does not grow because of them, while T2 (the frequent list) is protected because eviction takes from T1 whenever |T1| > p. The scan can still occupy T1 up to p, but cannot invade T2.
 
@@ -176,6 +227,14 @@ Data structures: a stack S (ordered by recency, holding LIR blocks, resident HIR
 
 Take a loop over 120 blocks with a cache of 100. LRU yields no hits (reuse distance 119 exceeds 100). LIRS, by classing 99 blocks as LIR (their IRR is 119 each, but they were established first and remain), keeps those 99 resident, so the loop gets roughly 99 hits per 120 references, around 82 percent. This is close to the optimal for this trace (OPT would also retain most of the loop and miss only about 20 of every 120 references): a dramatic gain from a structural insight rather than a parameter. A scan consists of new HIR blocks that pass through the small HIR region without ever being promoted.
 
+```mermaid
+xychart-beta
+  title "Hit ratio (%) on a loop of 120 blocks, cache of 100"
+  x-axis ["LRU", "LIRS", "OPT"]
+  y-axis "Percent" 0 --> 100
+  bar [0, 82, 83]
+```
+
 LIRS costs more to implement (stack pruning to keep the bottom of S as an LIR block, tracking non-resident metadata) and the exact bounds on metadata are subtle. It has been influential in database and storage research and implementations, including variants that make the stack and queue concurrency-friendly.
 
 ## 7. Choosing among them
@@ -195,9 +254,30 @@ Guidelines:
 - If loops or sequential patterns larger than the cache dominate (scan-heavy databases and file systems), consider LIRS-like designs.
 - If the cache is a high-throughput in-process cache for objects with a skewed popularity distribution, the admission-based designs of the next lesson (TinyLFU) are the current state of the art in many libraries.
 
+```mermaid
+flowchart TD
+  S[Which problem do you have?] --> A{Scans on top of LRU?}
+  A -->|yes| B[SLRU or 2Q]
+  A -->|no| C{Workload mix shifts over time?}
+  C -->|yes| D[ARC, if a lock and 2c keys are affordable]
+  C -->|no| E{Loops larger than the cache?}
+  E -->|yes| F[LIRS-like]
+  E -->|no| G[Skewed in-process cache: TinyLFU]
+```
+
 ## 8. A common thread: admission and history
 
 Notice how each policy uses history beyond the current contents. SLRU uses a promotion rule, 2Q and ARC use ghost lists of keys, LIRS uses non-resident metadata. In the next lesson, TinyLFU takes this to a probabilistic extreme: it keeps approximate frequency counts for a huge number of keys in a few bits each, and uses them to decide not just whom to evict but **whether to admit the newcomer at all**.
+
+```mermaid
+timeline
+  title Where each idea came from
+  1993 : LRU-K ranks by K-th last reference
+  1994 : 2Q adds the ghost list
+  2002 : LIRS ranks by inter-reference recency
+  2003 : ARC adapts the recency and frequency balance
+  2017 : TinyLFU adds probabilistic admission
+```
 
 ## Common pitfalls
 

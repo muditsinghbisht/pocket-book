@@ -27,6 +27,24 @@ Everything in this lesson, and most of what follows in the chapter, is a differe
 
 Each policy has a data-structure cost. In a cache that serves millions of operations per second, the cost of updating metadata on every hit is not a detail: it determines whether the policy is usable.
 
+```mermaid
+mindmap
+  root((Eviction signals))
+    Recency
+      LRU
+      CLOCK
+      Sampled LRU
+    Frequency
+      LFU
+      Aged counters
+    Insertion order
+      FIFO
+    No information
+      Random
+```
+
+> **Key idea:** every policy is a bet about the workload. The cheaper the bookkeeping on a hit, the more concurrent the cache can be, and the cruder the estimate of "used again soon".
+
 ## 2. FIFO and random
 
 **FIFO (first in, first out)** evicts the item that has been in the cache the longest, regardless of how often or how recently it was used. Implementation: a queue. On a miss, enqueue the new item at the tail and, if over capacity, dequeue from the head. A hit does nothing: no metadata update, which makes FIFO extremely cheap and trivially concurrent.
@@ -77,9 +95,32 @@ LRU:
 
 LRU: 7 misses, 3 hits (hit ratio 30 percent). LRU wins here because item A and B are re-referenced soon after use. Note that the very first hit on A moved it to the most recent position, saving it from eviction at the time D arrived, whereas FIFO evicted A precisely because it was oldest.
 
+```mermaid
+xychart-beta
+  title "Hits out of 10 requests (k = 3)"
+  x-axis ["FIFO", "LRU"]
+  y-axis "Hits" 0 --> 5
+  bar [2, 3]
+```
+
+> **Key idea:** the first hit on A moved it to the most recent end, so LRU kept it when D arrived. FIFO ignored that hit and evicted A for being old.
+
 ### Where LRU fails: scans and loops
 
 Suppose a cache of 1,000 entries serves a hot set of 500 items with high re-reference rates. A batch job now reads 10,000 distinct items once each (a table scan, a crawler, a backup). Each scanned item is, at the moment of insertion, the most recently used and displaces the least recently used, which is part of the hot set. After 1,000 scan requests, the whole hot set is gone, replaced by items never to be used again. The hit ratio collapses until the hot set reloads. This is **scan pollution** or **sequential flooding**. Similarly, a loop over k + 1 items yields a 0 percent hit ratio under LRU (the worst-case example in the policy theory lesson). The scan-resistant and adaptive policies lesson (2Q, ARC, LIRS) addresses precisely this.
+
+```mermaid
+sequenceDiagram
+  participant App as Requests
+  participant C as LRU cache (1,000)
+  App->>C: hot keys (500 items)
+  C-->>App: hits
+  App->>C: scan key 1 of 10,000
+  C-->>App: miss, evicts the oldest hot key
+  Note over C: after 1,000 scan keys the hot set is gone
+  App->>C: hot keys again
+  C-->>App: all misses until reloaded
+```
 
 ## 4. Implementing LRU in O(1)
 
@@ -98,6 +139,17 @@ Operations:
 - `put(key, value)`: if present, update the value and move the node to the head. If absent, create a node, insert at head and add to the map; if size exceeds capacity, remove the tail node and delete its key from the map. Therefore each node must store its **key** as well as its value, so that evicting the tail can remove the right map entry. (A frequent bug: forgetting to store the key in the node.)
 
 ```mermaid
+flowchart TD
+  P["put key, value"] --> E{Key in map?}
+  E -->|yes| U[Update value, move node to head]
+  E -->|no| F{Cache full?}
+  F -->|yes| V["Unlink tail.prev, remove its key from map"]
+  F -->|no| N[Create node]
+  V --> N
+  N --> H[Insert at head, add to map]
+```
+
+```mermaid
 flowchart LR
   subgraph Map[Hash map]
     k1[key A] --> nA
@@ -108,6 +160,21 @@ flowchart LR
 ```
 
 Using **sentinel nodes** for head and tail removes null checks: the real nodes are always between the sentinels, so insertion and removal code has no special cases for empty lists or end nodes. Most-recent items sit next to the head sentinel; the victim is `tail.prev`.
+
+What `get(A)` does to the list, in a few pointer updates and no scanning:
+
+```mermaid
+flowchart LR
+  subgraph Before
+    direction LR
+    h1((head)) <--> c1[C] <--> b1[B] <--> a1[A] <--> t1((tail))
+  end
+  subgraph After["After get A"]
+    direction LR
+    h2((head)) <--> a2[A] <--> c2[C] <--> b2[B] <--> t2((tail))
+  end
+  Before --> After
+```
 
 ### Java implementation
 
@@ -241,6 +308,14 @@ public:
 
 For n = 1,000,000 entries and 10 million operations: scan-for-minimum eviction costs about n comparisons per eviction. If 30 percent of operations are evictions (3 million), that is 3 x 10^6 x 10^6 = 3 x 10^12 comparisons. A heap by timestamp costs about log2(10^6) ≈ 20 operations per access update and eviction: roughly 10^7 x 20 = 2 x 10^8. The hash map plus list costs a constant few pointer updates per operation: about 10^7 x (a handful) = on the order of 5 x 10^7. The O(1) version is at least an order of magnitude cheaper than the heap and about five orders cheaper than the naive scan.
 
+| Design                 | Cost per operation | Total for 10 million operations |
+| ---------------------- | ------------------ | ------------------------------- |
+| Scan for minimum       | about n = 10^6     | 3 x 10^12 (evictions only)      |
+| Heap by timestamp      | about log2 n = 20  | 2 x 10^8                        |
+| Hash map + linked list | a few pointer ops  | about 5 x 10^7                  |
+
+> **Key idea:** the O(1) design is not just faster in theory. It is about 5 orders of magnitude cheaper than the naive scan at this size.
+
 ## 5. LFU: least frequently used
 
 **LFU** evicts the item with the lowest access count. It assumes popularity is stable: an item requested often in the past will be requested often in the future. Under the independent reference model (policy theory lesson) with stable probabilities, LFU approximates the optimal static policy.
@@ -256,6 +331,23 @@ For n = 1,000,000 entries and 10 million operations: scan-for-minimum eviction c
 ### O(1) LFU
 
 A common O(1) design uses a hash map from key to node and a doubly linked list of **frequency buckets**; each bucket holds a doubly linked list of nodes with that frequency, in LRU order for tie-breaking. Access increments an item's frequency: remove it from bucket f, insert it at the front of bucket f + 1 (creating the bucket if needed, deleting bucket f if empty). The eviction victim is the least recently used node in the lowest-frequency bucket, found at the end of the first bucket in O(1). Memory overhead is substantial (several pointers per entry plus buckets), one reason approximate counters like those in TinyLFU (next lessons) are preferred.
+
+```mermaid
+flowchart LR
+  M[Hash map: key to node] -.-> B1
+  subgraph F1["Bucket freq 1"]
+    B1[newest] --- B2[...] --- B3[oldest: victim]
+  end
+  subgraph F2["Bucket freq 2"]
+    C1[X] --- C2[Y]
+  end
+  subgraph F3["Bucket freq 3"]
+    D1[A]
+  end
+  F1 --> F2 --> F3
+```
+
+A hit on a node in bucket f moves it to the front of bucket f + 1. The victim is the oldest node of the lowest non-empty bucket.
 
 ### Worked example: LFU with tie-breaking
 
@@ -278,6 +370,15 @@ flowchart TD
   H -->|0| E[Evict entry, insert new item, advance hand]
 ```
 
+```mermaid
+stateDiagram-v2
+  [*] --> Bit1: loaded
+  Bit1 --> Bit1: hit sets bit
+  Bit1 --> Bit0: hand passes, second chance
+  Bit0 --> Bit1: hit
+  Bit0 --> Evicted: hand passes
+```
+
 ### Worked example
 
 Cache of 3 slots, entries loaded with reference bit 1. After A, B, C: slots [A:1, B:1, C:1], hand at slot 0.
@@ -293,6 +394,16 @@ Items used since the last sweep survive. The variant behaves like LRU at coarse 
 ## 7. Sampled and approximate LRU
 
 Another route to cheap approximate LRU is **sampling**: keep a last-access timestamp per entry, and on eviction sample a handful (say 5 or 10) random entries and evict the oldest among the sample. No linked list, no lock on hits (just a timestamp store), and a tunable accuracy: as the sample size grows, behaviour approaches true LRU. Redis uses this approach for its approximated LRU (a configurable sample count), maintaining a small pool of good eviction candidates between evictions. The probabilistic argument is simple: the chance that all s sampled entries come from the youngest half of the cache is (1/2)^s, so with s = 5 the sampled victim is in the older half with probability 1 - 1/32 = 96.9 percent, and is often much older.
+
+```mermaid
+xychart-beta
+  title "Chance the oldest of s samples is in the older half (%)"
+  x-axis ["1", "2", "3", "4", "5", "8", "10"]
+  y-axis "Percent" 40 --> 100
+  line [50, 75, 87.5, 93.75, 96.9, 99.6, 99.9]
+```
+
+> **Key idea:** each extra sample halves the chance of a bad victim, so a handful of samples already behaves much like true LRU with no list and no lock on hits.
 
 ## 8. Comparing the classical policies
 

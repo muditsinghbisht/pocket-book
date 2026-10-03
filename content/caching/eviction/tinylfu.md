@@ -38,6 +38,13 @@ The question is how to estimate "value". **TinyLFU** (Einziger, Friedman and Man
 
 This resembles LFU, but there are two crucial differences: frequency is estimated for **all recently seen keys** (not just resident ones) using a tiny probabilistic structure, and it is used only for the **admission decision**, with the eviction ordering handled by a recency-based structure. The cache therefore gets LFU's protection against one-hit wonders and LRU's responsiveness.
 
+| Question              | Eviction policy              | Admission policy (TinyLFU)                      |
+| --------------------- | ---------------------------- | ----------------------------------------------- |
+| What does it decide?  | who leaves                   | whether the newcomer enters at all              |
+| When does it run?     | on a miss, cache full        | on a miss, cache full, before evicting          |
+| What does it compare? | resident items by recency    | candidate against victim by estimated frequency |
+| What does it protect? | nothing from one-hit wonders | the working set from one-hit wonders            |
+
 ## 2. The estimation problem
 
 To compare a candidate with a victim we need the access frequency of an item that may have been absent from the cache for a while. We cannot afford a counter per distinct key ever seen (the key universe may be billions). We need a structure that:
@@ -59,6 +66,14 @@ A **count-min sketch** (Cormode and Muthukrishnan) is a two-dimensional array of
 Collisions can only **add** to a counter (other keys landing in the same cell), never subtract. Every cell for x therefore holds at least x's true count, so the estimate is never below the true count: the error is **one-sided overestimation**. The minimum across rows picks the row where x suffered the least interference, which is why the sketch works well: for x to be badly overestimated, all d rows must have collisions with heavy keys.
 
 The standard guarantee: with width w = ceil(e / ε) and depth d = ceil(ln(1 / δ)), the estimate exceeds the true count by at most ε · N (where N is the total number of updates) with probability at least 1 − δ. For example, ε = 0.01 and δ = 0.01 gives w = 272 and d = 5: 1,360 counters, regardless of how many distinct keys appear. The guarantee is in terms of the total count N, which is why aging (keeping N bounded) matters.
+
+| Parameter                     | Meaning                                      | Example value                |
+| ----------------------------- | -------------------------------------------- | ---------------------------- |
+| epsilon                       | error bound as a fraction of total updates N | 0.01                         |
+| delta                         | probability the bound fails                  | 0.01                         |
+| width w = ceil(e / epsilon)   | columns per row                              | 272                          |
+| depth d = ceil(ln(1 / delta)) | rows                                         | 5                            |
+| Total counters                | w x d                                        | 1,360 for any number of keys |
 
 ### Worked example by hand
 
@@ -84,6 +99,29 @@ Estimates:
 - B = min(row1[1] = 2, row2[2] = 5, row3[5] = 2) = **2** (exact; the collision with A in row 2 was ignored thanks to the minimum).
 - C = min(row1[0] = 4, row2[3] = 1, row3[4] = 4) = **1** (exact, because row 2 had no collision).
 
+```mermaid
+flowchart LR
+  A[Estimate for A] --> R1["Row 1, col 0: 4"]
+  A --> R2["Row 2, col 2: 5"]
+  A --> R3["Row 3, col 4: 4"]
+  R1 --> M["min = 4"]
+  R2 --> M
+  R3 --> M
+```
+
+```mermaid
+xychart-beta
+  title "True count versus sketch estimate"
+  x-axis ["A", "B", "C"]
+  y-axis "Count" 0 --> 5
+  bar [3, 2, 1]
+  bar [4, 2, 1]
+```
+
+The first bar of each pair is the true count (3, 2, 1), the second the estimate (4, 2, 1). The sketch can only err upward.
+
+> **Key idea:** collisions only add, so every cell is an upper bound on the true count. Taking the minimum across rows picks the least polluted one.
+
 Now apply admission. A cache holds A (victim candidate) and C arrives as a candidate: estimate(C) = 1 versus estimate(A) = 4, so C is rejected. Even with the 33 percent error on A, the decision is right, because the error is small relative to the gap. Sketches only misjudge when the true frequencies are close, and then the decision matters little.
 
 ### Compact counters
@@ -98,6 +136,14 @@ If counters only grow, the sketch becomes saturated and reflects all-time popula
 
 Suppose W = 10 and counters for A, B, C are 4, 2, 1 (as above, ignoring collisions). Suppose the stream length since the last reset reaches 10. Halving gives A = 2, B = 1, C = 0 (integer division). Now a newly popular key D that receives 3 requests quickly overtakes A's aged count of 2 if A is not requested again. A key that was hot long ago decays by half each period, so after j periods its counter is count / 2^j: a count of 15 becomes 0 after four resets without any new hits. This is an exponential decay with a half-life of about W/2 operations: a nice, cheap approximation of recency-weighted frequency.
 
+```mermaid
+xychart-beta
+  title "A counter of 15 across successive resets"
+  x-axis ["now", "reset 1", "reset 2", "reset 3", "reset 4"]
+  y-axis "Counter" 0 --> 16
+  line [15, 7, 3, 1, 0]
+```
+
 **Choosing W.** Larger W gives more accurate frequency estimates and a longer memory but slower adaptation. Smaller W reacts faster but yields noisier estimates (especially because frequencies cannot exceed W per period). Cache implementers typically set W in proportion to the cache size.
 
 ## 5. The doorkeeper
@@ -109,6 +155,14 @@ Most keys in skewed traces are seen once. Giving each such key a sketch counter 
 - At reset time, clear the doorkeeper along with halving the sketch.
 
 A Bloom filter is a bit array with k hash functions that supports "add" and "might contain" (false positives possible, false negatives impossible). The effect: one-hit wonders never reach the sketch, so the sketch stores only items seen at least twice, and its counters can be smaller or the sketch can be narrower for the same accuracy. The doorkeeper costs a few bits per cache entry and a modest increase in complexity.
+
+```mermaid
+flowchart TD
+  X[Access to key x] --> D{x in doorkeeper?}
+  D -->|no| S[Set x in doorkeeper, skip the sketch]
+  D -->|yes| I[Increment x in the sketch]
+  R[At reset] --> C[Clear doorkeeper and halve every counter]
+```
 
 Because the doorkeeper is cleared at reset, an item seen once before the reset and once after is treated as new again. That is a small approximation, in keeping with the sketch's purpose.
 
@@ -135,11 +189,44 @@ flowchart LR
 
 Every request, hit or miss, records the key in the frequency sketch (so that frequency reflects demand, not just cached hits).
 
+```mermaid
+pie title Capacity split in the worked example (100 entries)
+  "Window" : 1
+  "Probationary" : 20
+  "Protected" : 79
+```
+
 ### Worked example: admission decisions
 
 Suppose the cache capacity is 100: window 1, probationary 20, protected 79 (illustrative proportions). A scan of fresh items arrives. Each fresh item enters the window; when the next fresh item arrives, the previous becomes the candidate and is compared with the probationary victim, an item with frequency estimate of, say, 3 (it has been requested several times). The candidate's estimate is 1 (just seen). 1 > 3 is false, so the candidate is discarded. The scan churns through the window and never displaces the main cache. Contrast with LRU, where the scan would have evicted everything.
 
 Now a genuinely hot new item X: it enters the window and, being popular, receives several requests while in the window (hits in the window raise its sketch count, say to 4). When it reaches the window's end, its estimate 4 exceeds a probationary victim's estimate of 3, so X is admitted. If X had been rejected by a pure TinyLFU with no window, its requests would have all been misses, and it would have needed accumulated history across misses before admission. The window gives it the chance to prove itself in the cache.
+
+```mermaid
+sequenceDiagram
+  participant S as Scan item
+  participant W as Window
+  participant F as TinyLFU filter
+  participant P as Probationary
+  S->>W: fresh item enters the window
+  W->>F: window full, candidate estimate 1
+  P->>F: victim estimate 3
+  F-->>W: 1 is not above 3, discard candidate
+  Note over P: main cache untouched
+```
+
+```mermaid
+sequenceDiagram
+  participant X as Hot item X
+  participant W as Window
+  participant F as TinyLFU filter
+  participant P as Probationary
+  X->>W: enters the window
+  X->>W: requests hit in the window, estimate rises to 4
+  W->>F: window full, candidate estimate 4
+  P->>F: victim estimate 3
+  F-->>P: 4 is above 3, admit X
+```
 
 ### Reported behaviour
 
@@ -213,6 +300,8 @@ In C++ the structure is the same with `std::uint64_t` words, bit shifts for pack
 ## 8. Where admission fits in the larger picture
 
 Admission control is not unique to TinyLFU. CDNs often admit an object only on its second request ("cache on second hit", implemented with a Bloom filter, closely related to the doorkeeper), because a large fraction of requested objects are one-hit wonders and writing them to disk wastes flash endurance and capacity. Flash caches for the same reason apply admission policies to reduce writes. The unifying principle: **space and write bandwidth are precious; do not spend them on items that have not shown evidence of reuse.**
+
+> **Key idea:** do not spend space or write bandwidth on an item until it has shown evidence of reuse. The doorkeeper, "cache on second hit" in CDNs and flash-cache admission are the same idea at different layers.
 
 ## Common pitfalls
 

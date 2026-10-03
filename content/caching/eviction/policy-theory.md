@@ -27,6 +27,17 @@ The formal model in its simplest form (often called **paging**) is:
 - On each request, if the item is in the cache it is a **hit**. Otherwise it is a **miss** (fault): the item is brought in, and if the cache already holds k items, one is evicted.
 - The objective is to minimize the number of misses, equivalently maximize the **hit ratio** = hits / requests.
 
+```mermaid
+flowchart TD
+  R[Request for item x] --> Q{x in cache?}
+  Q -->|yes| H[Hit]
+  Q -->|no| M[Miss: fetch x]
+  M --> F{Cache full?}
+  F -->|yes| E[Eviction policy picks a victim]
+  F -->|no| A[Admit x]
+  E --> A
+```
+
 This model is a simplification. Real caches have items of different sizes, different load costs, expiry times, writes that make entries dirty and admission choices (the cache may refuse to store a missed item at all). We treat these refinements in the later lessons on TinyLFU admission and on size-aware and cost-aware policies. Understanding the clean model first is essential, because it supplies the vocabulary and the bounds against which everything else is measured.
 
 Two notes on the objective. First, the policy is **online**: it must decide knowing only the past, not the future. Second, with unit sizes and unit costs, minimizing misses is the whole game; once sizes or costs differ, the problem changes character and becomes much harder.
@@ -69,6 +80,16 @@ Step by step for OPT. Indices run 1 to 12. "Next use" is the next position where
 OPT: misses at requests 1, 2, 3, 4, 7, 10, 11 = **7 misses**, 5 hits, hit ratio 5/12 = 41.7 percent.
 
 For comparison, running LRU (evict the least recently used) with k = 3 on the same trace gives misses at requests 1, 2, 3, 4, 5, 6, 7, 10, 11, 12 = **10 misses** (hits only at requests 8 and 9), hit ratio 2/12 = 16.7 percent. FIFO (evict the oldest-inserted) gives **9 misses**. So on this trace, LRU is worse than FIFO, which is a reminder that no policy dominates on every trace. The trace is adversarial for LRU: it loops over a working set slightly larger than the cache.
+
+```mermaid
+xychart-beta
+  title "Misses on the 12-request trace (k = 3, fewer is better)"
+  x-axis ["OPT", "FIFO", "LRU"]
+  y-axis "Misses" 0 --> 12
+  bar [7, 9, 10]
+```
+
+> **Key idea:** even the optimal policy misses 7 of 12 times here, and the hit ratio of 5/12 is the ceiling for any policy at this cache size.
 
 ```mermaid
 flowchart TD
@@ -128,6 +149,20 @@ The running time is O(n log k). In C++ the same design uses `std::set<pair<int,i
 
 An online algorithm does not know the future, so an adversary who knows the algorithm can always request the item the algorithm just evicted. Consider a deterministic online policy with a cache of size k and a universe of k + 1 items. Start with the cache full. The adversary requests the one item missing from the cache; the policy misses and must evict something; the adversary requests the item just evicted, and so on. The policy misses on **every** request.
 
+```mermaid
+sequenceDiagram
+  participant Adv as Adversary
+  participant P as Online policy (k = 3)
+  Note over P: cache holds 3 of 4 items
+  Adv->>P: request the missing item
+  P-->>Adv: miss, evicts some item x
+  Adv->>P: request x
+  P-->>Adv: miss, evicts some item y
+  Adv->>P: request y
+  P-->>Adv: miss again
+  Note over Adv,P: n requests, n misses. OPT misses about n / k
+```
+
 But OPT, which knows the sequence, faces the same universe of k + 1 items: on a miss it evicts the item whose next use is farthest, which is at least k requests away (because among the k other resident items plus the one being fetched, the one farthest ahead must be at least k positions ahead when only k + 1 distinct items exist in total). So OPT misses at most once every k requests. For n requests: the online policy has n misses; OPT has at most about n / k misses. The ratio is k.
 
 This tells us that, in the worst case, **no deterministic online policy can beat a ratio of k** against OPT. That brings us to competitive analysis.
@@ -135,6 +170,8 @@ This tells us that, in the worst case, **no deterministic online policy can beat
 ## 4. Competitive analysis
 
 Competitive analysis measures an online algorithm against the offline optimum on every possible input, with no assumption about the workload.
+
+> **Key idea:** c-competitive means "never more than c times the optimum's misses, plus a constant, on any input". It is a worst-case certificate, not a prediction of real hit ratios.
 
 **Definition.** An online algorithm A is **c-competitive** if there exists a constant b such that for every request sequence σ:
 
@@ -151,6 +188,12 @@ Split the request sequence into **phases**: each phase is the longest run of con
 ### Worked example: the worst case for LRU
 
 Use k = 3 and a cyclic trace over k + 1 = 4 items: `A B C D A B C D A B C D`. LRU evicts exactly the item that is requested next, so every request misses: 12 misses. OPT, numbering requests 1 to 12: requests 1 to 3 (A, B, C) miss and fill the cache. Request 4 (D) misses; the next uses of A, B, C are at positions 5, 6, 7, so evict C, giving {A, B, D}. Requests 5 (A) and 6 (B) hit. Request 7 (C) misses; the next uses are A at 9, B at 10, D at 8, so evict B, giving {A, C, D}. Requests 8 (D) and 9 (A) hit. Request 10 (B) misses; A is never used again, so evict A, giving {B, C, D}. Requests 11 and 12 hit. OPT: misses at positions 1, 2, 3, 4, 7, 10 = 6 misses. Ratio LRU/OPT = 12 / 6 = 2, and it approaches k = 3 as the trace grows (OPT misses once per k = 3 requests in steady state, LRU on every request: ratio 3). This is the adversarial pattern known as a **loop larger than the cache** (also "scan" or "sequential flooding" in practice) which we revisit when we discuss scan resistance.
+
+| Request | 1   | 2   | 3   | 4   | 5   | 6   | 7   | 8   | 9   | 10  | 11  | 12  |
+| ------- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Item    | A   | B   | C   | D   | A   | B   | C   | D   | A   | B   | C   | D   |
+| LRU     | M   | M   | M   | M   | M   | M   | M   | M   | M   | M   | M   | M   |
+| OPT     | M   | M   | M   | M   | H   | H   | M   | H   | H   | M   | H   | H   |
 
 ### Interpreting the result
 
@@ -170,6 +213,17 @@ A policy is a **stack algorithm** if, for every trace and every point in the tra
 
 FIFO is not a stack algorithm. On the trace from Section 2, FIFO with k = 3 incurs 9 misses, but with k = 4 it incurs **10 misses**. Verify with k = 4: the first four requests miss (1, 2, 3, 4) leaving {1,2,3,4}, with 1 the oldest. Requests 1 and 2 hit. Request 5 misses and evicts 1 → {2,3,4,5}. Request 1 misses and evicts 2 → {3,4,5,1}. Request 2 misses, evicts 3 → {4,5,1,2}. Request 3 misses, evicts 4 → {5,1,2,3}. Request 4 misses, evicts 5 → {1,2,3,4}. Request 5 misses, evicts 1 → {2,3,4,5}. Total misses: 4 + 1 + 5 = 10. More memory, more misses: this is **Belady's anomaly**.
 
+```mermaid
+xychart-beta
+  title "Misses on the same trace as the cache grows"
+  x-axis ["k = 3", "k = 4"]
+  y-axis "Misses" 6 --> 12
+  line [9, 10]
+  line [10, 8]
+```
+
+The first line is FIFO: 9 misses at k = 3 but 10 at k = 4 (Belady's anomaly). The second line is LRU, which falls from 10 to 8 as the inclusion property guarantees.
+
 For comparison, LRU with k = 4 on the same trace gives 8 misses (4 cold misses, then misses on 5, 3, 4 and 5), lower than its 10 misses at k = 3, as the inclusion property guarantees: never worse with more space.
 
 Why does the anomaly matter in practice? It means that tuning a FIFO-managed cache upward can decrease hit ratio on some workloads, which breaks capacity-planning intuition. It is also one reason why miss-ratio-curve tools assume stack-algorithm behaviour.
@@ -181,6 +235,12 @@ For a request to item x, the **reuse distance** (also called stack distance) is 
 hit ratio(k) = (number of requests with reuse distance < k) / n.
 
 **Worked example.** For the trace `A B C A B D A`: reuse distances are: A (first) = infinity; B = infinity; C = infinity; A: between the two A's we have B, C so distinct count 2; B: between the two B's are C, A so 2; D = infinity; A: between the last two A's are B, D so 2. Histogram: infinite ×4, distance 2 ×3. With a cache of size 3 (distance < 3): the three requests with distance 2 hit, so hit ratio 3/7 = 42.9 percent. With size 2 (distance < 2): none hit, 0 percent. This is exactly the data structure behind a **miss-ratio curve**, which the last lesson of this chapter develops.
+
+| Request                     | A   | B   | C   | A   | B   | D   | A   |
+| --------------------------- | --- | --- | --- | --- | --- | --- | --- |
+| Reuse distance              | inf | inf | inf | 2   | 2   | inf | 2   |
+| Hit at k = 3 (distance < 3) | no  | no  | no  | yes | yes | no  | yes |
+| Hit at k = 2 (distance < 2) | no  | no  | no  | no  | no  | no  | no  |
 
 ## 6. From worst cases to workload models
 
@@ -195,6 +255,16 @@ _Worked example._ Four items with probabilities 0.5, 0.25, 0.15, 0.10 and a cach
 **Locality models (LRU stack model).** Requests depend on recent history; the probability of re-referencing the item at stack position j is a decreasing function of j. LRU is optimal under certain such models. Programs with loops, scans and phases combine these behaviours, which is why adaptive policies (ARC, LIRS) try to detect which regime they are in.
 
 **Take-away.** If requests are driven by long-term popularity (IRM-like), frequency-based policies win. If they are driven by temporal locality (bursts, sessions), recency-based policies win. Real traces mix both, plus scans. Chapter lessons that follow build policies that capture this mixture.
+
+```mermaid
+flowchart TD
+  W[What drives requests?] --> P[Long-term popularity, IRM-like]
+  W --> L[Temporal locality, bursts, sessions]
+  W --> S[Scans and loops]
+  P --> LF[Frequency policies: LFU, TinyLFU]
+  L --> LR[Recency policies: LRU, CLOCK]
+  S --> AD[Scan-resistant and adaptive: 2Q, ARC, LIRS]
+```
 
 ## 7. Practical implications
 

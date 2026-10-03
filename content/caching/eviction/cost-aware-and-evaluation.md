@@ -41,6 +41,24 @@ A cache of 100 MB must choose between two contents:
 
 Option X yields 10 hits per hour; Option Y yields 100 x 0.5 = 50 hits per hour. By object hit ratio, Y is 5 times better. In bytes: X serves 10 x 100 MB = 1,000 MB per hour from cache; Y serves 50 x 1 MB = 50 MB per hour. By byte hit ratio, X is 20 times better. A CDN paying for origin bandwidth prefers X; a web application whose users notice latency per request prefers Y. There is no objective answer without stating the objective. This is the first lesson of cost-aware caching: **write down the metric before choosing a policy**.
 
+```mermaid
+xychart-beta
+  title "Hits per hour (object hit ratio view)"
+  x-axis ["X: one 100 MB video", "Y: 100 x 1 MB"]
+  y-axis "Hits" 0 --> 60
+  bar [10, 50]
+```
+
+```mermaid
+xychart-beta
+  title "MB served from cache per hour (byte hit ratio view)"
+  x-axis ["X: one 100 MB video", "Y: 100 x 1 MB"]
+  y-axis "MB" 0 --> 1000
+  bar [1000, 50]
+```
+
+> **Key idea:** the same two cache contents rank in opposite order depending on the metric. Write down the objective before choosing a policy.
+
 ## 2. Heuristics for sizes: admission limits and size awareness
 
 The simplest size-aware techniques are blunt but effective.
@@ -49,6 +67,19 @@ The simplest size-aware techniques are blunt but effective.
 - **Size-aware admission.** Admit a large candidate only if its predicted value (by frequency) outweighs the combined value of the victims it would evict. Probabilistic variants admit an object with probability that decreases with its size (e^(−size / c)); popular large objects still get in eventually, one-offs rarely do.
 - **Weighted capacity.** Libraries allow each entry to have a **weight** (bytes or an estimated cost), with capacity expressed as a total weight. Evicting one tail node may not free enough space, so the eviction loop continues until the newcomer fits. Estimating entry size in managed languages is itself nontrivial (object headers, references, shared sub-objects), so approximations such as serialized size are typical.
 - **Segregation by size class.** Memcached-style slab allocators group items into size classes, each with its own LRU list; this avoids fragmentation but leaves capacity stranded in the wrong class when the size distribution shifts, which is why slab rebalancing mechanisms exist. This mix of allocation and eviction is why many production caches discuss "memory allocator" and "eviction policy" together.
+
+```mermaid
+mindmap
+  root((Handling sizes))
+    Maximum object size
+      refuse above about 1 percent of cache
+    Size-aware admission
+      probability falls with size
+    Weighted capacity
+      evict until the newcomer fits
+    Size classes
+      slab per class, own LRU
+```
 
 ## 3. GreedyDual-Size and GDSF
 
@@ -59,6 +90,14 @@ Each cached object p carries a priority value H(p). The cache keeps a global **i
 - **GreedyDual-Size**: when p is inserted or hit, set H(p) = L + cost(p) / size(p).
 - **GDSF**: H(p) = L + freq(p) × cost(p) / size(p), where freq(p) is the number of times p has been requested while cached.
 - **Eviction**: evict the object with the smallest H; then set L to the evicted object's H.
+
+```mermaid
+flowchart TD
+  N[Need space for a new object] --> M[Pick the object with the smallest H]
+  M --> E[Evict it]
+  E --> L["Set L to the evicted H"]
+  L --> I["Insert new object with H = L + freq x cost / size"]
+```
 
 ### Intuition
 
@@ -83,6 +122,23 @@ Used space: 1 + 4 + 2 = 7 MB; 3 MB free. Now object D arrives (size 5 MB, cost 2
 
 Now B is requested again: freq becomes 2, so H(B) = L + 2 × 10/4 = 1 + 5 = 6. State: A = 10, B = 6, D = 5, L = 1. Next, object E (size 3 MB, cost 6 ms) arrives; free space is 10 − (1 + 4 + 5) = 0, so we need 3 MB. Evict the minimum: D (H = 5, frees 5 MB). L becomes 5. Insert E: H(E) = 5 + 1 × 6/3 = 7. State: A = 10, B = 6, E = 7, L = 5. Observe the aging effect: E, a cheap and newly inserted item with density 2, now has H = 7, higher than B's 6, although B has a density of 2.5 and two accesses, because L has risen to 5. If B is not hit again, it will be the next victim, which is how stale items eventually drop out.
 
+| Step | Event            | Evicted | L   | H values after   |
+| ---- | ---------------- | ------- | --- | ---------------- |
+| 0    | A, B, C loaded   | none    | 0   | A 10, B 2.5, C 1 |
+| 1    | D arrives (5 MB) | C       | 1   | A 10, B 2.5, D 5 |
+| 2    | B hit, freq 2    | none    | 1   | A 10, B 6, D 5   |
+| 3    | E arrives (3 MB) | D       | 5   | A 10, B 6, E 7   |
+
+```mermaid
+xychart-beta
+  title "Inflation value L as evictions happen"
+  x-axis ["start", "evict C", "B hit", "evict D"]
+  y-axis "L" 0 --> 6
+  line [0, 1, 1, 5]
+```
+
+> **Key idea:** L only rises, so an object that is not hit keeps an old, fixed H and slowly becomes the cheapest victim. That is aging without timestamps.
+
 **Practical notes.** Implementing GDSF requires a priority queue (a heap, O(log n)) or approximation by bucketing. The cost function must be defined carefully: measured fetch latency from the origin is a natural choice, but measurement noise can destabilize priorities, so many systems use moving averages or categories. GDSF is well studied for web proxy caches; modern systems often get most of the benefit with simpler approximations (size limits plus an admission filter plus a recency or frequency policy), but the framework is the right way to think about the tradeoffs.
 
 ## 4. Cost-aware caching in application practice
@@ -95,9 +151,32 @@ Application developers rarely implement GDSF, but cost awareness shapes decision
 - **Negative or partial results** are cheap to recompute and should not occupy space that expensive results could use.
 - **Recompute cost versus memory cost.** In cloud settings, one can convert both to money: memory costs per GB-month, compute per second of CPU. The break-even is when (misses avoided per month × recompute cost) exceeds the cost of the memory holding the entry. A 1 KB value that saves 50 ms of CPU thousands of times a day is a bargain; a 5 MB value that saves 2 ms once a day is not.
 
+```mermaid
+quadrantChart
+  title Where to spend cache space first
+  x-axis Rare requests --> Frequent requests
+  y-axis Cheap miss --> Expensive miss
+  quadrant-1 Cache first
+  quadrant-2 Cache if space allows
+  quadrant-3 Skip
+  quadrant-4 Cheap to recompute
+  Aggregation 400 ms: [0.8, 0.9]
+  Key lookup 0.5 ms: [0.85, 0.1]
+  Monthly report: [0.15, 0.8]
+  Negative result: [0.2, 0.1]
+```
+
 ## 5. Evaluating policies: trace-driven simulation
 
 How do we know which policy is better? Reasoning from theory has limits (the competitive bound does not tell LRU from FIFO). The standard methodology is **trace-driven simulation**: record a sequence of cache requests from a real system, then replay it through software models of different policies and sizes, and compare metrics.
+
+```mermaid
+flowchart LR
+  T[Record a real trace] --> R[Replay through policy models at several sizes]
+  R --> M[Compare object, byte and cost hit ratios]
+  M --> B[Include LRU and OPT as baselines]
+  B --> G[Report the gap closed]
+```
 
 ### A minimal simulator
 
@@ -171,6 +250,16 @@ A trace of 100 requests has this reuse-distance histogram (distance = number of 
 | 16 or more (finite)     | 5     |
 | infinite (first access) | 20    |
 
+```mermaid
+pie title Reuse distance of 100 requests
+  "0 or 1" : 30
+  "2 to 3" : 20
+  "4 to 7" : 15
+  "8 to 15" : 10
+  "16 or more" : 5
+  "Infinite (first access)" : 20
+```
+
 LRU hits in a cache of k entries are requests with distance < k.
 
 | Cache size k               | Hits (distance < k) | Hit ratio | Miss ratio |
@@ -182,6 +271,16 @@ LRU hits in a cache of k entries are requests with distance < k.
 | above all finite distances | 75 + 5 = 80         | 80%       | 20%        |
 
 (The size-2 row assumes the 0-or-1 bucket is entirely below 2; for finer boundaries one needs the exact distribution.) The curve falls steeply up to size 8 and flattens, and the floor of 20 percent is the compulsory miss ratio: no cache of any size can do better on this trace. Capacity planning conclusion: going from 8 to 16 entries buys 10 points, from 16 to 32 only 5; whether the extra memory is worth it depends on its cost and the cost of a miss.
+
+```mermaid
+xychart-beta
+  title "LRU hit ratio (%) versus cache size"
+  x-axis ["2", "4", "8", "16", "all"]
+  y-axis "Hit ratio" 0 --> 100
+  line [30, 50, 65, 75, 80]
+```
+
+> **Key idea:** the curve rises steeply to size 8 and flattens. The remaining 20 percent is the compulsory floor that no cache size can remove.
 
 ```mermaid
 flowchart LR
@@ -209,6 +308,13 @@ Offline evaluation tells you which policy to pick; online metrics tell you wheth
 - **Admission rejection rate** for admission-controlled caches.
 - **Memory efficiency**: payload bytes divided by total memory (metadata overhead).
 - **Shadow caches and A/B tests**: run a candidate policy in parallel on live traffic (a shadow cache that records what it would have hit without serving) or route a fraction of traffic to a different configuration, and compare. This captures effects that replay misses.
+
+```mermaid
+flowchart TD
+  A[Measure eviction age of evicted entries] --> B{Far below the TTL?}
+  B -->|yes| C[Cache too small for the load: check the MRC, grow or add admission]
+  B -->|no| D[Capacity is ample: entries leave near their TTL]
+```
 
 ## 8. A decision checklist
 

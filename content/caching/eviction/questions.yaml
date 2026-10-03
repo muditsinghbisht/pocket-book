@@ -716,3 +716,327 @@ questions:
     hints:
       - Where does LRU put a key the first time it is read?
       - How many times is each scanned row read?
+
+  - id: eviction-lru-trace-02
+    level: beginner
+    type: numeric
+    q: >-
+      An LRU cache with capacity 3 starts empty and sees the sequence
+      A B C A B D A B. How many of the 8 requests are hits?
+    answer: 4
+    tolerance: 0
+    unit: hits
+    explain: >-
+      Trace, least recent first: A miss [A], B miss [A B], C miss [A B C],
+      A hit [B C A], B hit [C A B], D miss and evict C [A B D], A hit
+      [B D A], B hit [D A B]. Four hits. A and B are reused before C's slot
+      is needed, which is exactly the temporal locality LRU bets on.
+    hints:
+      - Write the cache after every request, least recent first.
+      - A hit moves the item to the most recent end; a miss on a full cache evicts the leftmost item.
+
+  - id: eviction-belady-min-01
+    level: beginner
+    type: mcq
+    q: >-
+      On a miss with a full cache, which item does Belady's optimal (MIN)
+      policy evict?
+    options:
+      - The item that was used least recently
+      - The item with the lowest access count
+      - The item whose next use is farthest in the future, or that is never used again
+      - A uniformly random item
+    answer: 2
+    explain: >-
+      MIN needs the future: it evicts the item that will be needed last, which
+      postpones the next miss as long as possible. That is why it is a
+      benchmark and not an implementable online policy. Least recent is LRU,
+      lowest count is LFU, and random is the random policy.
+
+  - id: eviction-hit-cost-01
+    level: beginner
+    type: mcq
+    q: >-
+      Which of these policies does no bookkeeping at all when a request is a
+      cache hit?
+    options:
+      - LRU, which moves the node to the front of the list
+      - CLOCK, which sets a reference bit
+      - LFU, which increments a counter
+      - FIFO, which only tracks insertion order
+    answer: 3
+    explain: >-
+      FIFO orders items by when they were inserted, and a hit does not change
+      that, so a hit costs nothing. LRU relinks a node, LFU updates a counter
+      and CLOCK stores one bit. That cheap hit path is why FIFO-style designs
+      are attractive at very high request rates.
+
+  - id: eviction-byte-hit-ratio-01
+    level: beginner
+    type: mcq
+    q: >-
+      A CDN pays mainly for traffic from its origin servers. Which metric should
+      its eviction policy try to maximize?
+    options:
+      - Object hit ratio, because it counts every request equally
+      - Byte hit ratio, because it measures how much origin traffic is avoided
+      - The number of distinct objects held in the cache
+      - Nothing; the metric does not affect the choice of policy
+    answer: 1
+    explain: >-
+      Origin bandwidth is paid per byte, so the goal is to avoid fetching bytes.
+      Byte hit ratio favours keeping large popular objects, while object hit
+      ratio favours many small ones. In the lesson's example a single 100 MB
+      object serves 1,000 MB per hour from cache against 50 MB for 100 small
+      objects, even though the small objects produce five times more hits.
+
+  - id: eviction-lfu-trace-01
+    level: intermediate
+    type: numeric
+    q: >-
+      An LFU cache with capacity 2 breaks frequency ties by evicting the least
+      recently used item, and an item's count starts at 1 each time it is
+      loaded. How many hits does the sequence A A B C B A produce?
+    answer: 2
+    tolerance: 0
+    unit: hits
+    explain: >-
+      A miss {A:1}, A hit {A:2}, B miss {A:2, B:1}, C miss evicts B (lowest
+      count) {A:2, C:1}, B miss evicts C (count 1 against A's 2) {A:2, B:1},
+      A hit. Hits are the second and the last request: 2. The newest slot keeps
+      churning while A holds its count, which is LFU's cold-start behaviour.
+    hints:
+      - Track the counts as well as the contents.
+      - When a new item arrives, evict the one with the lowest count, never A while it has count 2.
+
+  - id: eviction-reuse-distance-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A 50-request trace has this reuse-distance histogram. Fewer than 2 distinct
+      items in between: 10 requests. 2 or 3: 15. 4 to 7: 5. 8 or more but finite:
+      5. Infinite (first access): 15. What is the LRU hit ratio, in percent, for
+      a cache of 4 entries?
+    answer: 50
+    tolerance: 0
+    unit: percent
+    explain: >-
+      Under LRU a request hits in a cache of size k exactly when its reuse
+      distance is less than k. For k = 4 that is the buckets with distance 0 to
+      3: 10 + 15 = 25 hits out of 50, which is 50 percent. The 15 infinite
+      distances are compulsory misses and cap the best possible ratio at 70
+      percent.
+    hints:
+      - A request hits when its reuse distance is less than the cache size.
+      - Add the buckets whose distances are all below 4.
+
+  - id: eviction-countmin-estimate-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A count-min sketch has 2 rows and 4 columns. Key X hashes to columns
+      (0, 1), key Y to (0, 2) and key Z to (3, 1). After the stream X X Y Z Z Z,
+      what does the sketch estimate for X?
+    answer: 3
+    tolerance: 0
+    explain: >-
+      Row 1: column 0 holds X twice plus Y once, so 3; column 3 holds Z three
+      times. Row 2: column 1 holds X twice plus Z three times, so 5; column 2
+      holds Y once. The estimate for X is min(3, 5) = 3, an overestimate of its
+      true count 2 because Y collided with it in row 1. The estimate can never
+      be below the true count.
+    hints:
+      - Update every row for every request, then take the minimum over the key's cells.
+      - Add up all keys that land in the same column of the same row.
+
+  - id: eviction-arc-ghost-01
+    level: intermediate
+    type: mcq
+    q: >-
+      An ARC cache gets a miss for a key that is found in ghost list B2. What
+      does ARC conclude and do?
+    options:
+      - T1 was too small, so it increases p
+      - The item is a one-hit wonder, so it is inserted at the front of T1
+      - T2 was too small, so it decreases p and loads the item into T2
+      - The ghost entry is stale, so it is ignored and the miss is treated as brand new
+    answer: 2
+    explain: >-
+      B2 holds keys recently evicted from T2, the frequency list. A hit there
+      means ARC regrets an eviction from T2, so it shrinks p (the target size
+      of T1) to give T2 more room and loads the item into T2. A B1 hit does the
+      opposite.
+
+  - id: eviction-sampled-lru-01
+    level: intermediate
+    type: numeric
+    q: >-
+      Sampled LRU picks 3 random entries and evicts the oldest of the sample.
+      What is the probability, in percent, that the sample contains at least one
+      entry from the older half of the cache? Assume uniform sampling.
+    answer: 87.5
+    tolerance: 0.1
+    unit: percent
+    explain: >-
+      The sample misses the older half only if all 3 entries come from the
+      younger half: (1/2)^3 = 12.5 percent. So the chance of at least one
+      older-half entry is 87.5 percent, and the oldest of the sample is then
+      in the older half. Each extra sample roughly halves the failure chance.
+    hints:
+      - Compute the chance that every sampled entry is in the younger half.
+      - Subtract that chance from 1.
+
+  - id: eviction-arc-p-update-01
+    level: advanced
+    type: numeric
+    q: >-
+      An ARC cache has c = 100 and p = 40, with |B1| = 10 and |B2| = 30 (assume
+      the ghost list sizes do not change). A request hits in B1, and then a
+      request hits in B2. What is p afterwards?
+    answer: 42
+    tolerance: 0
+    explain: >-
+      B1 hit with |B1| = 10 < |B2| = 30: p increases by |B2| / |B1| = 3, so
+      p = 43. B2 hit with |B2| = 30 >= |B1| = 10: p decreases by 1, so p = 42.
+      The step is larger when the ghost list that produced the hit is the
+      smaller one, because each hit from a small list is the rarer signal.
+    hints:
+      - The increment on a B1 hit is 1 if |B1| >= |B2|, otherwise |B2| / |B1|.
+      - The decrement on a B2 hit is 1 if |B2| >= |B1|, otherwise |B1| / |B2|.
+
+  - id: eviction-gdsf-priority-01
+    level: advanced
+    type: numeric
+    q: >-
+      A GDSF cache has inflation value L = 2. An object of size 4 MB with a miss
+      cost of 12 ms has been requested 3 times while cached. What is its
+      priority H?
+    answer: 11
+    tolerance: 0
+    explain: >-
+      GDSF sets H = L + freq x cost / size = 2 + 3 x 12 / 4 = 2 + 9 = 11. The
+      object is evicted only when it has the smallest H, and L then rises to
+      that value, which is how stale objects age out.
+    hints:
+      - Use H = L + freq x cost / size.
+      - Compute the benefit density cost / size first, then multiply by the frequency.
+
+  - id: eviction-wtinylfu-window-01
+    level: advanced
+    type: mcq
+    q: >-
+      A product page suddenly goes viral. A cache that uses pure TinyLFU
+      admission, with no window, keeps missing on it for several minutes even
+      though the requests are frequent. What is the most likely cause and the
+      standard remedy?
+    options:
+      - The sketch counters are saturated, so halve the sample size
+      - The doorkeeper has a false positive, so enlarge the Bloom filter
+      - The eviction order is wrong, so switch the main region from SLRU to FIFO
+      - The new key's estimated frequency is lower than the victim's, so it is rejected before it can prove itself; add a small window that admits every new item
+    answer: 3
+    explain: >-
+      A brand-new key starts with a low estimate while established victims
+      have higher counts, so pure admission rejects it, and each rejected
+      request is another miss. W-TinyLFU puts a small LRU window in front
+      that admits everything for a while, letting a burst accumulate hits and
+      sketch counts before it faces the admission contest.
+
+  - id: eviction-competitive-lru-01
+    level: advanced
+    type: free
+    q: >-
+      LRU is k-competitive. Why is that not a good argument for choosing LRU
+      over FIFO in production?
+    answer: >-
+      The k-competitive bound is a worst-case guarantee shared by LRU, FIFO
+      and every marking algorithm, so it cannot tell them apart. It is only
+      reached on contrived inputs, and k is huge in practice. Real behaviour
+      depends on workload locality and is measured by trace replay.
+    explain: >-
+      Competitive analysis is a robustness certificate, not a performance
+      predictor. LRU and FIFO have the same bound, yet differ on real traces
+      (and FIFO also has Belady's anomaly). Choose between them with
+      trace-driven simulation against OPT and LRU baselines.
+
+  - id: eviction-opt-trace-01
+    level: staff
+    type: numeric
+    q: >-
+      A cache of k = 4 sees the cyclic trace A B C D E repeated four times (20
+      requests: A B C D E A B C D E ...). LRU misses all 20. How many misses
+      does Belady's MIN incur?
+    answer: 8
+    tolerance: 0
+    unit: misses
+    explain: >-
+      Requests 1 to 4 miss. Request 5 (E) evicts D, the farthest next use, and
+      A, B, C hit. Request 9 (D) evicts C and request 13 (C) evicts B. Request 17
+      (B) evicts A, which is never used again, and the rest hit. Misses at
+      requests 1, 2, 3, 4, 5, 9, 13 and 17 give 8. LRU's 20 over OPT's 8 is a
+      ratio of 2.5, approaching k = 4 as the trace grows.
+    hints:
+      - On a miss, look ahead and evict the cached item whose next occurrence is farthest, or that never recurs.
+      - After each miss MIN gets several hits in a row.
+
+  - id: eviction-eviction-age-01
+    level: staff
+    type: mcq
+    q: >-
+      Your cache has a 1 hour TTL, but the dashboard shows evicted entries had
+      been in the cache only 4 minutes on average and the hit ratio is falling
+      as traffic grows. What is the best interpretation and first action?
+    options:
+      - Capacity is ample, because entries are being removed so quickly
+      - The TTL is too long, so reduce it to 4 minutes
+      - The policy is broken, so replace LRU with random eviction immediately
+      - The cache is too small for the working set, so check the miss-ratio curve and size or admission before touching the TTL
+    answer: 3
+    explain: >-
+      If entries are evicted far younger than their TTL, capacity (not expiry)
+      is the limit: useful entries are pushed out early. Plot the miss-ratio
+      curve on a recent trace to see where the knee is, and consider bigger
+      capacity, a scan-resistant policy or an admission filter. Changing the
+      TTL does not help because entries never live that long.
+
+  - id: eviction-lru-concurrency-01
+    level: staff
+    type: mcq
+    q: >-
+      A 64-core service uses one global lock around an LRU list, and profiling
+      shows the lock dominating CPU. Which change removes most of the hit-path
+      contention with the smallest expected loss in hit ratio?
+    options:
+      - Replace the hash map with a tree so lookups are faster
+      - Increase the cache capacity so there are fewer evictions
+      - Shard the cache and record hits in buffers that are replayed in batches, or use a CLOCK-style bit
+      - Switch to LFU, because it does not update anything on a hit
+    answer: 2
+    explain: >-
+      The cost is that every hit mutates the shared list under one lock. Sharding
+      splits the lock, batched replay of recorded accesses takes the list update
+      off the hit path, and CLOCK reduces a hit to a bit store. All three
+      approximate global LRU order with only a small hit-ratio loss. LFU still
+      updates counters on every hit, and the other options do not touch the
+      lock.
+
+  - id: eviction-policy-choice-01
+    level: staff
+    type: free
+    q: >-
+      Your in-process cache serves a skewed key-value workload with many one-hit
+      wonders, occasional viral bursts, a nightly full scan and objects from 200
+      bytes to 2 MB. Outline a policy design and how you would validate it.
+    answer: >-
+      Use an admission-controlled, scan-resistant design such as W-TinyLFU: a
+      small window for bursts, a segmented main region and a sketch with aging
+      to reject one-hit wonders and scan items. Add a maximum object size or
+      size-aware admission and weights in bytes. Validate with a recorded trace
+      replayed against LRU and OPT at several sizes, plus shadow caches in
+      production.
+    explain: >-
+      Each feature of the workload maps to a mechanism: one-hit wonders and
+      scans to admission, bursts to the window, variable sizes to byte weights
+      and size limits. State the objective first (object, byte or cost hit
+      ratio), include the nightly job in the trace, compare the gap closed
+      between LRU and OPT, and monitor hit ratio by key class and eviction age.
