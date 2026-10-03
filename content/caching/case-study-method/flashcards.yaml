@@ -1,0 +1,21 @@
+cards:
+  - front: Load-bearing cache
+    back: A cache the source of truth cannot run without; losing it multiplies source load beyond capacity.
+  - front: Cold-cache multiplier
+    back: Miss ratio after loss / miss ratio before. 98% hits and 25% of the cache lost gives 26.5% / 2%, about 13x.
+  - front: "Facebook 2010: what turned a bad value into an outage?"
+    back: Clients treated database errors as invalid values and deleted cache keys, a feedback loop that kept the database overloaded.
+  - front: "Facebook 2010: how was the loop broken?"
+    back: All traffic to the database cluster was stopped, which meant turning the site off, and then traffic was restored gradually.
+  - front: "Slack 2-22-22: the trigger"
+    back: Restarting 25% of the cache fleet at peak, while automation replaced departing nodes with empty spares.
+  - front: "Slack 2-22-22: the mitigation"
+    back: Throttling client boot requests so database load dropped and the caches could refill.
+  - front: "Scaling Memcache: what are leases for?"
+    back: They stop stale sets (invalidation revokes the token) and thundering herds (one token per key per 10 seconds).
+  - front: "Meta, Cache made consistent: the race"
+    back: A delayed fill reply arrives after the invalidation for a newer write and stores the old value indefinitely.
+  - front: Incident analysis template
+    back: Context, what happened, root cause, fix, lessons, sources.
+  - front: Design review question for any cache
+    back: What happens to the source of truth when this cache is empty, slow or wrong?

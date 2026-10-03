@@ -1,0 +1,32 @@
+sections:
+  - heading: Vocabulary
+    items:
+      - "**Hit ratio**: hits / (hits + misses); database load follows the miss ratio"
+      - "**TTL**: time to live for an entry"
+      - "**Eviction**: dropping an entry because the cache is full"
+      - "**Invalidation**: dropping or updating an entry because the source changed"
+  - heading: Numbers to remember
+    items:
+      - "**Average latency** = hit time + miss ratio x miss penalty"
+      - "**Max miss ratio** = database capacity / total reads"
+      - "90% to 95% hit ratio **halves** database load"
+      - "**Stampede size** = arrival rate x rebuild time (5,000/s x 0.2 s = 1,000)"
+      - "Going from N to N+1 nodes: hash mod N moves about N/(N+1) of keys; consistent hashing about 1/(N+1)"
+  - heading: Read and write patterns
+    items:
+      - "**Cache-aside**: the app reads the cache, then the DB on a miss, then fills the cache"
+      - "**Read-through**: the cache itself loads from the DB on a miss"
+      - "**Write-through**: write the cache and the DB before acknowledging"
+      - "**Write-back**: acknowledge after the cache write, flush to the DB later (risk: loss)"
+      - "**Write-around**: write only the DB; cache on a later read"
+  - heading: Protecting the database
+    items:
+      - "Coalesce misses (single-flight, leases) so one key causes one rebuild"
+      - "Add jitter to TTLs; refresh hot keys early; serve stale while revalidating"
+      - "Never treat a fetch error as an invalid value; back off and break circuits"
+      - "Restart cache nodes slowly; warm caches before peaks"
+  - heading: Consistency
+    items:
+      - "On write, delete the key rather than set it (order-insensitive)"
+      - "Use versions or leases so an older fill never overwrites a newer value"
+      - "Measure consistency as a metric; keep TTL as a backstop"

@@ -1,0 +1,3 @@
+title: CDNs and edge caching
+summary: How CDNs route and cache, HTTP caching semantics, purge strategies, dynamic content, security and cost.
+order: 8

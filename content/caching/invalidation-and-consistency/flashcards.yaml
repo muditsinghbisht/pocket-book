@@ -1,0 +1,21 @@
+cards:
+  - front: Why is invalidation hard?
+    back: Changes and invalidations travel separately from reads and fills, so messages can be lost, delayed or reordered across many cache copies.
+  - front: TTL as a backstop
+    back: Even if an invalidation is lost, a TTL bounds how long the stale value can be served.
+  - front: TTL trade-off
+    back: Short TTLs mean fresher data but more misses and source load; long TTLs mean fewer misses but more staleness.
+  - front: Event-driven invalidation
+    back: Publish a change event (for example from the database's change log) and have caches delete the affected keys.
+  - front: Stale set race
+    back: A reader misses, reads the old value, a writer updates and invalidates, then the reader stores the old value.
+  - front: Lease (memcache-style)
+    back: A token given on a miss; only a set with a valid token is accepted, and an invalidation revokes outstanding tokens.
+  - front: Versioned values
+    back: Store a version or timestamp with each value and refuse writes older than what the cache holds.
+  - front: Read-your-writes
+    back: A client always sees its own latest write, for example by reading from the source or bypassing the cache right after writing.
+  - front: Eventual consistency for a cache
+    back: If writes stop, every cached copy eventually equals the source of truth.
+  - front: Measuring cache consistency
+    back: Sample cached values, recheck them against the source after a delay, and report the inconsistency rate as a metric.

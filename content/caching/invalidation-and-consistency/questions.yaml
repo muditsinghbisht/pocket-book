@@ -1,0 +1,201 @@
+questions:
+  - id: time-map-01
+    level: intermediate
+    type: coding
+    q: >-
+      Time Based Key-Value Store (LeetCode 981). Keep every version of a key
+      with its timestamp. `set(key, value, timestamp)` records a version, and
+      `get(key, timestamp)` returns the value with the largest timestamp that
+      is not after `timestamp`, or "" if there is none. Timestamps passed to
+      `set` are strictly increasing. This is the shape of a versioned cache:
+      point-in-time reads, and never letting an older version win.
+    explain: >-
+      Store a history per key. Because set timestamps only grow, appending
+      keeps each history sorted, so get is a binary search for the last entry
+      with time <= timestamp: set O(1), get O(log m) for m versions of the
+      key. A per-key ordered map (TreeMap.floorEntry, std::map::upper_bound)
+      costs O(log m) for both operations, but it also works if timestamps
+      arrive out of order.
+    hints:
+      - Each key needs a history, not a single value.
+      - Set timestamps only grow, so each key's history is already sorted.
+      - You want the last entry whose timestamp is <= the query. Binary search for it.
+    link: https://leetcode.com/problems/time-based-key-value-store/
+    solutions:
+      - title: Append-only history per key plus binary search
+        java: |
+          import java.util.ArrayList;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Map;
+
+          class TimeMap {
+              private record Version(int time, String value) {}
+
+              private final Map<String, List<Version>> history = new HashMap<>();
+
+              public TimeMap() {}
+
+              public void set(String key, String value, int timestamp) {
+                  history.computeIfAbsent(key, k -> new ArrayList<>()).add(new Version(timestamp, value));
+              }
+
+              public String get(String key, int timestamp) {
+                  List<Version> versions = history.get(key);
+                  if (versions == null) return "";
+                  int lo = 0, hi = versions.size() - 1, found = -1;
+                  while (lo <= hi) {
+                      int mid = (lo + hi) >>> 1;
+                      if (versions.get(mid).time() <= timestamp) {
+                          found = mid;
+                          lo = mid + 1;
+                      } else {
+                          hi = mid - 1;
+                      }
+                  }
+                  return found < 0 ? "" : versions.get(found).value();
+              }
+          }
+        cpp: |
+          #include <algorithm>
+          #include <iterator>
+          #include <string>
+          #include <unordered_map>
+          #include <utility>
+          #include <vector>
+
+          class TimeMap {
+              std::unordered_map<std::string, std::vector<std::pair<int, std::string>>> history;
+
+          public:
+              void set(const std::string& key, const std::string& value, int timestamp) {
+                  history[key].emplace_back(timestamp, value);
+              }
+
+              std::string get(const std::string& key, int timestamp) {
+                  auto it = history.find(key);
+                  if (it == history.end()) return "";
+                  const auto& versions = it->second;
+                  // First version strictly after `timestamp`; the one before it is the answer.
+                  auto after = std::upper_bound(
+                      versions.begin(), versions.end(), timestamp,
+                      [](int t, const std::pair<int, std::string>& v) { return t < v.first; });
+                  return after == versions.begin() ? "" : std::prev(after)->second;
+              }
+          };
+      - title: Ordered map per key (floor lookup)
+        java: |
+          import java.util.HashMap;
+          import java.util.Map;
+          import java.util.TreeMap;
+
+          class TimeMap {
+              private final Map<String, TreeMap<Integer, String>> history = new HashMap<>();
+
+              public TimeMap() {}
+
+              public void set(String key, String value, int timestamp) {
+                  history.computeIfAbsent(key, k -> new TreeMap<>()).put(timestamp, value);
+              }
+
+              public String get(String key, int timestamp) {
+                  TreeMap<Integer, String> versions = history.get(key);
+                  if (versions == null) return "";
+                  Map.Entry<Integer, String> e = versions.floorEntry(timestamp);
+                  return e == null ? "" : e.getValue();
+              }
+          }
+        cpp: |
+          #include <iterator>
+          #include <map>
+          #include <string>
+          #include <unordered_map>
+
+          class TimeMap {
+              std::unordered_map<std::string, std::map<int, std::string>> history;
+
+          public:
+              void set(const std::string& key, const std::string& value, int timestamp) {
+                  history[key][timestamp] = value;
+              }
+
+              std::string get(const std::string& key, int timestamp) {
+                  auto it = history.find(key);
+                  if (it == history.end()) return "";
+                  auto after = it->second.upper_bound(timestamp);
+                  return after == it->second.begin() ? "" : std::prev(after)->second;
+              }
+          };
+
+  - id: invalidate-delete-vs-set-01
+    level: intermediate
+    type: mcq
+    q: >-
+      In cache-aside, after writing to the database, many systems delete the
+      cache key rather than writing the new value into the cache. Why?
+    options:
+      - Deleting is the only operation Memcached supports
+      - Two concurrent writers can update the cache in a different order than they updated the database, leaving the older value cached; a delete lets the next read load the current value
+      - Writing the value into the cache would always be slower than a database read
+      - Deleting the key makes the next read a hit
+    answer: 1
+    explain: >-
+      With "update the cache on write", writer A can commit to the database
+      first but set the cache last, so the cache keeps A's older value
+      indefinitely. Deleting is idempotent and order-insensitive: whatever the
+      order, the next miss reads the database. A smaller race remains (a slow
+      reader filling an old value after the delete), which is what leases or
+      versioned sets close.
+    hints:
+      - Picture two writers and draw the order of their database and cache operations.
+      - Which operation gives the same result regardless of order?
+
+  - id: invalidate-lease-01
+    level: staff
+    type: mcq
+    q: >-
+      A cache uses leases in the style of Facebook's Memcache paper: on a miss
+      the client gets a lease token and only a set that carries a valid token
+      is accepted. Reader R misses and gets a token, then reads the old row
+      from the database. Before R sets the value, a writer updates the row
+      and deletes the key. What happens to R's set?
+    options:
+      - It is accepted, because R had the token first
+      - It is rejected, because the delete invalidated R's token
+      - It is accepted, but with a shorter TTL
+      - It blocks until the writer's transaction is visible
+    answer: 1
+    explain: >-
+      The delete invalidates outstanding lease tokens for the key, so the
+      stale fill is refused and the next reader loads the new value. Leases
+      also rate-limit fills for a key, which is how they double as stampede
+      protection.
+    hints:
+      - The point of the token is to detect that something happened between the miss and the set.
+      - What does the writer's delete do to tokens that were already handed out?
+
+  - id: cache-consistency-proof-01
+    level: staff
+    type: free
+    q: >-
+      How would you show that a distributed cache is consistent with its
+      database, and what would you do when it is not?
+    answer: >-
+      State the invariant: every cached value eventually equals the database
+      value. Measure it instead of assuming it: sample keys, record what the
+      cache returned, re-check against the database after a delay that allows
+      in-flight invalidations to land, and report an inconsistency rate as a
+      metric with an objective (this is the idea behind Meta's Polaris). Trace
+      invalidation events end to end so you can find which step lost or
+      reordered one. Prevent the common races with versions or timestamps
+      (an older fill must never overwrite a newer value) and leases for
+      fill-versus-invalidate ordering. Repair with targeted invalidation, and
+      keep TTLs as a backstop that bounds how long any miss can last.
+    explain: >-
+      A strong answer separates detection (an invariant, sampling, tracing),
+      prevention (versioning, leases, ordering) and repair (invalidate, TTL
+      backstop), and treats consistency as something measured continuously.
+    hints:
+      - What exact invariant are you trying to check?
+      - How do you tell "not yet invalidated" from "never will be"?
+      - Which race lets an old value overwrite a new one, and how do versions stop it?

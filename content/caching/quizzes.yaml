@@ -1,0 +1,45 @@
+quizzes:
+  - id: caching-basics
+    title: Caching basics
+    questions:
+      - cache-hit-ratio-01
+      - cache-hit-ratio-02
+      - cache-stale-01
+      - locality-01
+      - layers-order-01
+      - write-back-risk-01
+      - id: cache-miss-01
+        level: beginner
+        type: mcq
+        q: On a cache miss in cache-aside, what reads the database?
+        options: [The cache, The application]
+        answer: 1
+        explain: In cache-aside the application owns loading data on a miss.
+        hints:
+          - The pattern is also called lazy loading.
+          - The cache itself is passive here.
+
+  - id: caching-back-of-the-envelope
+    title: Back-of-the-envelope caching numbers
+    questions:
+      - amat-01
+      - min-hit-ratio-01
+      - hit-ratio-90-to-95-01
+      - lru-trace-01
+      - stampede-size-01
+      - cache-capacity-nodes-01
+      - consistent-hashing-01
+      - restart-cold-cache-01
+
+  - id: caching-under-load-and-in-incidents
+    title: Caches under load and in incidents
+    questions:
+      - ttl-jitter-01
+      - hot-key-01
+      - invalidate-delete-vs-set-01
+      - invalidate-lease-01
+      - error-as-miss-01
+      - restart-cold-cache-01
+      - flash-sale-ttl-01
+      - cache-feedback-loop-01
+      - cache-consistency-proof-01

@@ -1,0 +1,3 @@
+title: Distributed caches
+summary: Sharding, replication, Memcached and Redis architecture, memory, multi-region, capacity planning, monitoring and runbooks.
+order: 7

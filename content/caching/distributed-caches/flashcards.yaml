@@ -1,0 +1,21 @@
+cards:
+  - front: Sharding a cache
+    back: Split keys across nodes so capacity and throughput grow with the number of nodes.
+  - front: hash(key) mod N
+    back: Simple placement, but changing N moves most keys (9 to 10 nodes moves about 90%).
+  - front: Consistent hashing
+    back: Nodes and keys sit on a hash ring and a key belongs to the next node clockwise; adding or removing a node moves only about 1/N of keys.
+  - front: Virtual nodes
+    back: Each physical node owns many points on the ring, which evens out load and spreads a failed node's keys over many others.
+  - front: Replication in a cache
+    back: Keep copies of keys on more than one node for read throughput and to survive node loss, at the cost of memory and invalidation work.
+  - front: Memcached
+    back: A multithreaded in-memory key-value cache with simple get/set semantics, designed as a pure cache, so treat its contents as disposable.
+  - front: Redis
+    back: An in-memory data structure server (strings, hashes, lists, sets, sorted sets and more) with optional persistence and replication.
+  - front: Capacity planning formula
+    back: Nodes = items x (value + overhead) x copies / usable memory per node, plus headroom for skew and failures.
+  - front: Client-side routing vs proxy
+    back: Clients can hash keys to nodes themselves, or send requests through a routing proxy (for example Mcrouter) that owns the topology.
+  - front: Key metrics to monitor
+    back: Hit ratio, evictions, memory use, latency percentiles, connection counts and per-node load (to spot hot keys).

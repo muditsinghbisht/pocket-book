@@ -1,0 +1,22 @@
+questions:
+  - id: cdn-s-maxage-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A response carries `Cache-Control: max-age=60, s-maxage=600`. How long
+      may a CDN (a shared cache) treat it as fresh, and how long may the
+      browser?
+    options:
+      - CDN 60 s, browser 600 s
+      - CDN 600 s, browser 60 s
+      - Both 600 s
+      - Both 60 s
+    answer: 1
+    explain: >-
+      `s-maxage` applies only to shared caches such as CDNs and proxies, and
+      overrides `max-age` there. Private caches such as the browser ignore it
+      and use `max-age`. This lets the edge absorb traffic for longer while
+      browsers recheck sooner.
+    hints:
+      - The "s" stands for shared.
+      - Is a browser a shared cache or a private one?

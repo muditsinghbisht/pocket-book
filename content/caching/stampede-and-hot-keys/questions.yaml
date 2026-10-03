@@ -1,0 +1,86 @@
+questions:
+  - id: stampede-size-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A hot key expires. It is read 5,000 times per second, rebuilding the
+      value takes 200 ms, and there is no stampede protection. About how many
+      requests miss and go to the database before the first rebuild lands in
+      the cache?
+    answer: 1000
+    tolerance: 100
+    unit: requests
+    explain: >-
+      Arrival rate x rebuild time = 5,000/s x 0.2 s = 1,000 requests, each
+      doing the same expensive rebuild. Request coalescing (single-flight) or
+      leases cut this to one rebuild, and the other readers wait briefly or are
+      served a stale value.
+    hints:
+      - Every request that arrives while the value is missing is a miss.
+      - Multiply the arrival rate by the time the key stays missing.
+
+  - id: ttl-jitter-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A batch job warms 1 million keys at 09:00, all with a 1-hour TTL. At
+      10:00 the database load spikes. What is the simplest fix?
+    options:
+      - Raise the TTL to 2 hours
+      - Add random jitter to each TTL, for example 60 minutes plus or minus 10%
+      - Shorten the TTL to 5 minutes
+      - Disable TTLs and rely on eviction
+    answer: 1
+    explain: >-
+      Keys written together expire together, so their misses are synchronized.
+      Jitter spreads the expirations out over a window, which turns one spike
+      into a gentle rise. Changing the TTL alone just moves the spike.
+    hints:
+      - When do all of these keys expire?
+      - How could you make them expire at different times?
+
+  - id: hot-key-01
+    level: advanced
+    type: mcq
+    q: >-
+      A single key receives far more traffic than one cache node can serve,
+      and its node is saturated while the others are idle. Which mitigation
+      addresses the cause?
+    options:
+      - Add more cache nodes to the cluster
+      - Replicate the key, for example as several suffixed copies spread over nodes or in an in-process near cache, and spread reads across the copies
+      - Lower the key's TTL
+      - Switch the eviction policy from LRU to LFU
+    answer: 1
+    explain: >-
+      Sharding puts one key on one node, so adding nodes does not split a
+      single key's load. Spreading reads over replicas (key#1..key#n, or a
+      short-TTL local cache in each app server) does. The trade-off is more
+      copies to invalidate.
+    hints:
+      - Where does a single key live in a sharded cache?
+      - Adding nodes spreads keys, not the requests for one key.
+
+  - id: flash-sale-ttl-01
+    level: intermediate
+    type: free
+    q: >-
+      Your product page cache has a 10-minute TTL and a flash sale starts at
+      noon. List the failure modes and how you would mitigate each.
+    answer: >-
+      Stampede when hot keys expire: coalesce rebuilds (single-flight or
+      leases), add TTL jitter, refresh early (probabilistic early expiration
+      such as XFetch), or serve stale while revalidating. Cold start if the
+      sale pages were never cached: pre-warm them before noon. Hot keys
+      saturating one cache node: replicate those keys or add a local near
+      cache. Stale prices versus correctness: give prices a short TTL or
+      event-driven invalidation, and descriptions a long TTL. Protecting the
+      database if all else fails: rate limits, load shedding and circuit
+      breakers on the miss path.
+    explain: >-
+      Good answers cover load (stampede, cold start, hot keys), correctness
+      (stale prices) and a last line of defence for the database.
+    hints:
+      - What happens at the moment many popular keys expire at once?
+      - Are the sale pages even in the cache at 12:00:00?
+      - Which data must be fresh, and which can be minutes old?

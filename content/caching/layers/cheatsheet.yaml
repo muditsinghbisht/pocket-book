@@ -1,0 +1,19 @@
+sections:
+  - heading: From the user to the data
+    items:
+      - "**Browser cache**: private, per device, HTTP headers"
+      - "**CDN / edge**: shared, near users, HTTP headers and purge"
+      - "**Reverse proxy**: shared, in front of the app servers"
+      - "**Application cache**: in-process or Redis / Memcached"
+      - "**Database buffer pool**: hot pages in RAM"
+      - "**OS page cache**: hot file pages in RAM"
+  - heading: Inside the machine
+    items:
+      - "**L1 / L2 / L3**: smaller and faster closer to the core"
+      - "**Cache line**: unit of transfer, commonly 64 B"
+      - "**TLB**: caches address translations"
+  - heading: Rules of thumb
+    items:
+      - "Cache as close to the reader as freshness allows"
+      - "Every layer is another copy to invalidate"
+      - "Know which layer served a response (headers, metrics)"

@@ -1,0 +1,192 @@
+questions:
+  - id: cache-hit-ratio-01
+    level: beginner
+    type: mcq
+    q: What does a cache hit ratio measure?
+    options:
+      - The share of requests served from the cache
+      - The share of keys that have expired
+      - The memory used by the cache
+      - The latency of the slowest request
+    answer: 0
+    explain: Hit ratio is hits divided by total lookups (hits plus misses).
+    hints:
+      - Think about what happens on every lookup.
+      - Every lookup is either a hit or a miss.
+
+  - id: cache-aside-01
+    level: intermediate
+    type: open
+    q: Describe the cache-aside (lazy loading) read path.
+    explain: >-
+      The application checks the cache first. On a miss it reads from the
+      database, writes the value into the cache, and returns it.
+    hints:
+      - Who is responsible for filling the cache, the cache or the application?
+      - What happens on a miss?
+
+  - id: cache-hit-ratio-02
+    level: beginner
+    type: numeric
+    q: A cache serves 900 of 1,000 lookups. What is its hit ratio?
+    answer: 90
+    tolerance: 0
+    unit: "%"
+    explain: 900 hits / 1,000 lookups = 0.9, or 90%.
+
+  - id: cache-stale-01
+    level: beginner
+    type: free
+    q: Why can a cache return stale data?
+    answer: >-
+      The cache holds a copy. If the source of truth changes and the copy is
+      not updated or invalidated, reads keep returning the old value until the
+      entry expires or is replaced.
+    explain: Every cache trades some freshness for speed; TTLs and invalidation bound how stale it can get.
+
+  - id: design-hashmap-01
+    level: beginner
+    type: coding
+    q: >-
+      Design HashMap (LeetCode 706). Build a map from int keys to int values
+      with `put`, `get` (-1 if missing) and `remove`, without using a built-in
+      hash table. Keys and values are in [0, 10^6] and there are at most 10^4
+      calls. A hash table is the index inside almost every cache, so this is
+      the first building block.
+    explain: >-
+      Separate chaining maps each key to one of B buckets and keeps a short
+      linked list per bucket: O(1) average per operation (O(n/B) if the
+      buckets get crowded), O(B + n) space. Because the key range is small
+      here, a direct-address array also works: O(1) worst case, but it always
+      uses memory for all 10^6 + 1 possible keys, which is why real caches
+      hash instead.
+    hints:
+      - Where would you put a key if memory were unlimited and keys were small?
+      - If the key range is too large, map each key to a small bucket index.
+      - Two keys can land in the same bucket. How do you store several entries in one bucket?
+    link: https://leetcode.com/problems/design-hashmap/
+    solutions:
+      - title: Separate chaining with linked-list buckets
+        java: |
+          class MyHashMap {
+              private static class Node {
+                  final int key;
+                  int value;
+                  Node next;
+                  Node(int key, int value, Node next) { this.key = key; this.value = value; this.next = next; }
+              }
+
+              private static final int BUCKETS = 1024; // power of two, so key & (BUCKETS - 1) is the index
+              private final Node[] buckets = new Node[BUCKETS];
+
+              public MyHashMap() {}
+
+              private int index(int key) { return key & (BUCKETS - 1); }
+
+              public void put(int key, int value) {
+                  int i = index(key);
+                  for (Node n = buckets[i]; n != null; n = n.next) {
+                      if (n.key == key) { n.value = value; return; }
+                  }
+                  buckets[i] = new Node(key, value, buckets[i]);
+              }
+
+              public int get(int key) {
+                  for (Node n = buckets[index(key)]; n != null; n = n.next) {
+                      if (n.key == key) return n.value;
+                  }
+                  return -1;
+              }
+
+              public void remove(int key) {
+                  int i = index(key);
+                  Node prev = null;
+                  for (Node n = buckets[i]; n != null; prev = n, n = n.next) {
+                      if (n.key == key) {
+                          if (prev == null) buckets[i] = n.next;
+                          else prev.next = n.next;
+                          return;
+                      }
+                  }
+              }
+          }
+        cpp: |
+          #include <vector>
+
+          class MyHashMap {
+              struct Node {
+                  int key, value;
+                  Node* next;
+              };
+              static constexpr int kBuckets = 1024; // power of two, so key & (kBuckets - 1) is the index
+              std::vector<Node*> buckets = std::vector<Node*>(kBuckets, nullptr);
+
+              static int index(int key) { return key & (kBuckets - 1); }
+
+          public:
+              MyHashMap() = default;
+              MyHashMap(const MyHashMap&) = delete;
+              MyHashMap& operator=(const MyHashMap&) = delete;
+
+              ~MyHashMap() {
+                  for (Node* n : buckets) {
+                      while (n) {
+                          Node* next = n->next;
+                          delete n;
+                          n = next;
+                      }
+                  }
+              }
+
+              void put(int key, int value) {
+                  Node*& head = buckets[index(key)];
+                  for (Node* n = head; n; n = n->next) {
+                      if (n->key == key) { n->value = value; return; }
+                  }
+                  head = new Node{key, value, head};
+              }
+
+              int get(int key) {
+                  for (Node* n = buckets[index(key)]; n; n = n->next) {
+                      if (n->key == key) return n->value;
+                  }
+                  return -1;
+              }
+
+              void remove(int key) {
+                  for (Node** p = &buckets[index(key)]; *p; p = &(*p)->next) {
+                      if ((*p)->key == key) {
+                          Node* dead = *p;
+                          *p = dead->next;
+                          delete dead;
+                          return;
+                      }
+                  }
+              }
+          };
+      - title: Direct-address array (keys are at most 10^6)
+        java: |
+          import java.util.Arrays;
+
+          class MyHashMap {
+              private final int[] values = new int[1_000_001];
+
+              public MyHashMap() { Arrays.fill(values, -1); } // -1 means absent
+
+              public void put(int key, int value) { values[key] = value; }
+
+              public int get(int key) { return values[key]; }
+
+              public void remove(int key) { values[key] = -1; }
+          }
+        cpp: |
+          #include <vector>
+
+          class MyHashMap {
+              std::vector<int> values = std::vector<int>(1000001, -1); // -1 means absent
+
+          public:
+              void put(int key, int value) { values[key] = value; }
+              int get(int key) { return values[key]; }
+              void remove(int key) { values[key] = -1; }
+          };

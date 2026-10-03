@@ -1,0 +1,3 @@
+title: Foundations of caching
+summary: Locality, hit ratio, average access time, miss types, Amdahl and Little laws, access distributions, and when not to cache.
+order: 1

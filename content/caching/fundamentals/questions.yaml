@@ -1,0 +1,79 @@
+questions:
+  - id: amat-01
+    level: beginner
+    type: numeric
+    q: >-
+      A cache lookup takes 1 ms and a database read takes 50 ms. The hit ratio
+      is 90%. A miss pays for the cache lookup and then the database read.
+      What is the average read latency?
+    answer: 6
+    tolerance: 0.05
+    unit: ms
+    explain: >-
+      Every read pays the 1 ms lookup; the 10% that miss also pay 50 ms:
+      1 + 0.10 x 50 = 6 ms. Equivalently, 0.9 x 1 + 0.1 x (1 + 50) = 0.9 + 5.1
+      = 6 ms.
+    hints:
+      - Average latency = hit time + miss ratio x miss penalty.
+      - The miss ratio is 1 - 0.9.
+
+  - id: min-hit-ratio-01
+    level: beginner
+    type: numeric
+    q: >-
+      An application does 10,000 reads per second. The database can serve at
+      most 2,000 reads per second. What is the minimum cache hit ratio that
+      keeps the database from being overloaded?
+    answer: 80
+    tolerance: 0
+    unit: "%"
+    explain: >-
+      Only misses reach the database, so misses must be at most 2,000 / 10,000
+      = 20% of reads. The hit ratio must be at least 100% - 20% = 80%. Below
+      that, the cache is no longer optional: it is part of the database's
+      capacity.
+    hints:
+      - Which reads reach the database?
+      - Miss ratio <= database capacity / total reads.
+
+  - id: hit-ratio-90-to-95-01
+    level: intermediate
+    type: mcq
+    q: >-
+      With the same traffic, the hit ratio rises from 90% to 95%. What happens
+      to the read load on the database?
+    options:
+      - It falls by 5%
+      - It halves
+      - It falls by 10%
+      - It does not change
+    answer: 1
+    explain: >-
+      Database load is proportional to the miss ratio, which goes from 10% to
+      5%: half as many misses. The last few points of hit ratio matter far
+      more than the first few.
+    hints:
+      - Look at the miss ratio, not the hit ratio.
+      - Which requests reach the database?
+
+  - id: locality-01
+    level: beginner
+    type: mcq
+    q: >-
+      A user opens the same profile page several times in a minute, and each
+      time the page reads the same rows. Which property makes this workload
+      cache well?
+    options:
+      - Spatial locality
+      - Temporal locality
+      - Write amplification
+      - Strong consistency
+    answer: 1
+    explain: >-
+      Temporal locality means that data used recently is likely to be used
+      again soon, which is exactly what a cache exploits. Spatial locality is
+      about using data stored near recently used data, such as the next bytes
+      of a cache line or the next rows of a range scan.
+    hints:
+      - The same data is read again, a short time later.
+      - Is the reuse about time or about neighbouring addresses?

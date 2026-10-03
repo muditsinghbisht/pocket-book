@@ -1,0 +1,21 @@
+cards:
+  - front: Cache hit
+    back: A lookup that finds the requested key in the cache.
+  - front: Cache miss
+    back: A lookup that does not find the key, so the source of truth is read.
+  - front: TTL
+    back: Time to live. How long an entry stays valid before it expires.
+  - front: Hit ratio
+    back: Hits / (hits + misses). Database load is proportional to the miss ratio, 1 - hit ratio.
+  - front: Average access time with a cache
+    back: Hit time + miss ratio x miss penalty. Example, 1 ms + 0.1 x 50 ms = 6 ms.
+  - front: Cache-aside (lazy loading)
+    back: The application reads the cache; on a miss it reads the database and fills the cache itself.
+  - front: Eviction vs expiration
+    back: Eviction removes an entry because the cache is full (for example LRU). Expiration removes it because its TTL ran out.
+  - front: Invalidation
+    back: Removing or updating a cached entry because the source of truth changed.
+  - front: Cache stampede (thundering herd)
+    back: Many clients miss on the same key at once and all rebuild it from the database at the same time.
+  - front: Why is a cache with a high hit ratio "load-bearing"?
+    back: The database is sized for the misses. If the cache goes cold, database load multiplies (2% to 26.5% misses is about 13x).

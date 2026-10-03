@@ -1,0 +1,23 @@
+cards:
+  - front: CDN
+    back: A network of shared HTTP caches at edge locations near users, in front of an origin server.
+  - front: Origin
+    back: The server that holds the authoritative copy of the content the CDN caches.
+  - front: Cache-Control max-age
+    back: How many seconds a response stays fresh in any cache, private or shared.
+  - front: Cache-Control s-maxage
+    back: Freshness lifetime for shared caches only (CDNs, proxies); overrides max-age there, and browsers ignore it.
+  - front: Cache-Control no-store
+    back: No cache may store the response at all.
+  - front: Cache-Control no-cache
+    back: A cache may store the response but must revalidate it with the origin before each reuse.
+  - front: Cache-Control private
+    back: Only a private cache (the browser) may store the response; shared caches must not.
+  - front: ETag and conditional requests
+    back: The cache revalidates with If-None-Match; if the content is unchanged the origin answers 304 Not Modified without a body.
+  - front: Vary header
+    back: Lists request headers that change the response, so caches keep a separate copy per value (for example Accept-Encoding).
+  - front: Purge
+    back: Explicitly removing content from CDN caches before it expires, by URL or by tag.
+  - front: Cache key
+    back: What the CDN uses to decide two requests are the same, usually the URL plus selected headers; too much variety in it destroys the hit ratio.

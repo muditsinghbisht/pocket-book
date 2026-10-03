@@ -1,0 +1,19 @@
+sections:
+  - heading: Policies
+    items:
+      - "**LRU**: evict oldest access. Map + doubly linked list, O(1)"
+      - "**LFU**: evict fewest accesses, ties by recency. Frequency buckets, O(1)"
+      - "**FIFO**: evict oldest insert"
+      - "**Random**: no metadata"
+      - "**CLOCK**: LRU approximation with reference bits"
+      - "**Belady (MIN)**: evict furthest next use; offline bound only"
+  - heading: Failure modes
+    items:
+      - "Scans pollute LRU; use segmented LRU, 2Q, ARC or admission"
+      - "Cyclic access just larger than the cache defeats LRU"
+      - "LFU without decay keeps stale popular keys"
+  - heading: Practice problems
+    items:
+      - "LRU Cache (LeetCode 146)"
+      - "LFU Cache (LeetCode 460)"
+      - "All O`one Data Structure (LeetCode 432)"

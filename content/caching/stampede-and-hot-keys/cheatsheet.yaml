@@ -1,0 +1,21 @@
+sections:
+  - heading: Failure modes
+    items:
+      - "**Stampede**: hot key expires, many rebuilds"
+      - "**Synchronized expiry**: keys written together expire together"
+      - "**Penetration**: keys that do not exist always miss"
+      - "**Cold start**: empty cache after restart or deploy"
+      - "**Hot key**: one key saturates one node"
+  - heading: Defences
+    items:
+      - "Single-flight or leases: one rebuild per key"
+      - "TTL jitter; probabilistic early refresh (XFetch)"
+      - "Serve stale while revalidating"
+      - "Negative caching or Bloom filters for missing keys"
+      - "Pre-warm; restart nodes slowly"
+      - "Replicate hot keys; near caches"
+      - "Rate limits, circuit breakers, load shedding on the miss path"
+  - heading: Estimate it
+    items:
+      - "Duplicate rebuilds = arrival rate x rebuild time"
+      - "Load after losing a fraction f of a cache = 1 - h(1 - f) misses, versus 1 - h before"

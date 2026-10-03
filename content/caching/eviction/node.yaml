@@ -1,0 +1,3 @@
+title: Eviction
+summary: Which entry to drop when the cache is full.
+order: 4

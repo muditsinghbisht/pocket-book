@@ -1,0 +1,19 @@
+sections:
+  - heading: Placement
+    items:
+      - "**hash mod N**: simple; N to N+1 moves about N/(N+1) of keys"
+      - "**Consistent hashing**: moves about 1/N of keys"
+      - "**Virtual nodes**: even load, spread failover"
+  - heading: Capacity
+    items:
+      - "Nodes = items x (value + overhead) x copies / usable RAM per node"
+      - "Example: 40M x 600 B x 2 / 12 GB = 4 nodes, before headroom"
+  - heading: Memcached vs Redis
+    items:
+      - "**Memcached**: multithreaded, simple key-value, contents treated as disposable"
+      - "**Redis**: rich data structures, optional persistence, replication"
+  - heading: Operate it
+    items:
+      - "Watch hit ratio, evictions, memory, p99 latency, per-node load"
+      - "Restart and resize gradually; warm new nodes"
+      - "Plan for losing a node: the source must absorb its misses"

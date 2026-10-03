@@ -1,0 +1,21 @@
+cards:
+  - front: CPU cache levels
+    back: L1 is smallest and fastest and closest to the core; L2 and L3 are larger and slower; then main memory.
+  - front: Cache line
+    back: The fixed-size block a CPU cache moves at once (commonly 64 bytes), which is how it exploits spatial locality.
+  - front: TLB
+    back: Translation lookaside buffer. A cache of virtual-to-physical address translations.
+  - front: OS page cache
+    back: The kernel keeps recently read file pages in RAM, so repeated file reads avoid the disk.
+  - front: Browser cache
+    back: A private HTTP cache on the user's device, controlled by response headers such as Cache-Control.
+  - front: CDN
+    back: A shared HTTP cache at edge locations near users, in front of the origin server.
+  - front: Application cache
+    back: An in-process or remote cache (for example Redis or Memcached) used by application code, often cache-aside.
+  - front: Database buffer pool
+    back: Memory where the database keeps recently used pages so queries avoid reading disk.
+  - front: Why layered caches compose well
+    back: Each layer that answers a request saves every layer behind it, so even modest hit ratios at each layer multiply.
+  - front: Cost of more layers
+    back: More copies to invalidate, more places for stale data, and harder debugging of which layer served a response.

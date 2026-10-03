@@ -1,0 +1,718 @@
+questions:
+  - id: lru-cache-01
+    level: intermediate
+    type: coding
+    q: >-
+      LRU Cache (LeetCode 146). Build a fixed-capacity key/value store. `get`
+      returns the value (or -1) and counts as a use; `put` inserts or updates,
+      and when the cache is over capacity it evicts the entry that was used
+      longest ago. Both operations must run in O(1) average time.
+    explain: >-
+      Combine a hash map (key to node) with a doubly linked list ordered by
+      recency. Every access moves the node to the front; eviction removes the
+      node at the back. Both approaches are O(1) per operation and
+      O(capacity) space. The library version uses LinkedHashMap in access
+      order (Java) or std::list::splice, which moves a node without
+      invalidating iterators (C++).
+    hints:
+      - A hash map gives O(1) lookup but knows nothing about order.
+      - You need an order you can reshuffle in O(1). Which list can remove a known node in O(1)?
+      - Map each key to its list node. On every access move that node to the front; evict from the back.
+    link: https://leetcode.com/problems/lru-cache/
+    solutions:
+      - title: Hash map plus hand-written doubly linked list with sentinels
+        java: |
+          import java.util.HashMap;
+          import java.util.Map;
+
+          class LRUCache {
+              private static class Node {
+                  int key, value;
+                  Node prev, next;
+                  Node(int key, int value) { this.key = key; this.value = value; }
+              }
+
+              private final int capacity;
+              private final Map<Integer, Node> map = new HashMap<>();
+              private final Node head = new Node(0, 0), tail = new Node(0, 0); // sentinels
+
+              public LRUCache(int capacity) {
+                  this.capacity = capacity;
+                  head.next = tail;
+                  tail.prev = head;
+              }
+
+              private void unlink(Node n) {
+                  n.prev.next = n.next;
+                  n.next.prev = n.prev;
+              }
+
+              private void pushFront(Node n) {
+                  n.next = head.next;
+                  n.prev = head;
+                  head.next.prev = n;
+                  head.next = n;
+              }
+
+              public int get(int key) {
+                  Node n = map.get(key);
+                  if (n == null) return -1;
+                  unlink(n);
+                  pushFront(n);
+                  return n.value;
+              }
+
+              public void put(int key, int value) {
+                  Node n = map.get(key);
+                  if (n != null) {
+                      n.value = value;
+                      unlink(n);
+                      pushFront(n);
+                      return;
+                  }
+                  if (map.size() == capacity) {
+                      Node lru = tail.prev;
+                      unlink(lru);
+                      map.remove(lru.key);
+                  }
+                  n = new Node(key, value);
+                  map.put(key, n);
+                  pushFront(n);
+              }
+          }
+        cpp: |
+          #include <unordered_map>
+
+          class LRUCache {
+              struct Node {
+                  int key, value;
+                  Node *prev = nullptr, *next = nullptr;
+                  Node(int k, int v) : key(k), value(v) {}
+              };
+
+              int capacity;
+              std::unordered_map<int, Node*> map;
+              Node *head, *tail; // sentinels
+
+              void unlink(Node* n) {
+                  n->prev->next = n->next;
+                  n->next->prev = n->prev;
+              }
+
+              void pushFront(Node* n) {
+                  n->next = head->next;
+                  n->prev = head;
+                  head->next->prev = n;
+                  head->next = n;
+              }
+
+          public:
+              explicit LRUCache(int capacity)
+                  : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {
+                  head->next = tail;
+                  tail->prev = head;
+              }
+
+              LRUCache(const LRUCache&) = delete;
+              LRUCache& operator=(const LRUCache&) = delete;
+
+              ~LRUCache() {
+                  for (Node* n = head; n;) {
+                      Node* next = n->next;
+                      delete n;
+                      n = next;
+                  }
+              }
+
+              int get(int key) {
+                  auto it = map.find(key);
+                  if (it == map.end()) return -1;
+                  unlink(it->second);
+                  pushFront(it->second);
+                  return it->second->value;
+              }
+
+              void put(int key, int value) {
+                  auto it = map.find(key);
+                  if (it != map.end()) {
+                      it->second->value = value;
+                      unlink(it->second);
+                      pushFront(it->second);
+                      return;
+                  }
+                  if ((int)map.size() == capacity) {
+                      Node* lru = tail->prev;
+                      unlink(lru);
+                      map.erase(lru->key);
+                      delete lru;
+                  }
+                  Node* n = new Node(key, value);
+                  map[key] = n;
+                  pushFront(n);
+              }
+          };
+      - title: Library ordered structure (LinkedHashMap in access order, std::list with splice)
+        java: |
+          import java.util.LinkedHashMap;
+          import java.util.Map;
+
+          class LRUCache extends LinkedHashMap<Integer, Integer> {
+              private final int capacity;
+
+              public LRUCache(int capacity) {
+                  super(capacity, 0.75f, true); // true = access order
+                  this.capacity = capacity;
+              }
+
+              public int get(int key) {
+                  return super.getOrDefault(key, -1); // counts as an access
+              }
+
+              public void put(int key, int value) {
+                  super.put(key, value); // updating an existing key also moves it
+              }
+
+              @Override
+              protected boolean removeEldestEntry(Map.Entry<Integer, Integer> eldest) {
+                  return size() > capacity;
+              }
+          }
+        cpp: |
+          #include <list>
+          #include <unordered_map>
+          #include <utility>
+
+          class LRUCache {
+              int capacity;
+              std::list<std::pair<int, int>> items; // front = most recent
+              std::unordered_map<int, std::list<std::pair<int, int>>::iterator> index;
+
+          public:
+              explicit LRUCache(int capacity) : capacity(capacity) {}
+
+              int get(int key) {
+                  auto it = index.find(key);
+                  if (it == index.end()) return -1;
+                  items.splice(items.begin(), items, it->second); // iterator stays valid
+                  return it->second->second;
+              }
+
+              void put(int key, int value) {
+                  auto it = index.find(key);
+                  if (it != index.end()) {
+                      it->second->second = value;
+                      items.splice(items.begin(), items, it->second);
+                      return;
+                  }
+                  if ((int)items.size() == capacity) {
+                      index.erase(items.back().first);
+                      items.pop_back();
+                  }
+                  items.emplace_front(key, value);
+                  index[key] = items.begin();
+              }
+          };
+
+  - id: lfu-cache-01
+    level: advanced
+    type: coding
+    q: >-
+      LFU Cache (LeetCode 460). Like LRU, but eviction removes the entry used
+      the fewest times; ties go to the least recently used among them. A new
+      key starts with a use count of 1 and every `get` or `put` on a key bumps
+      its count. `get` and `put` must run in O(1) average time, and the
+      capacity may be 0.
+    explain: >-
+      The O(1) approach groups keys into buckets by use count. Each bucket
+      keeps its keys in recency order, so the eviction victim is the oldest key
+      in the bucket with the smallest count. Track that smallest count
+      (minFreq): it becomes 1 after inserting a new key, and after a bump it
+      only moves up when the old bucket was the minimum and is now empty. The
+      ordered-set alternative sorts entries by (count, last-use tick). It is
+      shorter and easier to get right, but it is O(log n) per operation, so it
+      trades the stated O(1) bound for simplicity.
+    hints:
+      - Group keys by their use count.
+      - Inside one count group you need recency order, and you must evict from the smallest non-empty count.
+      - Track minFreq. After a new insert it is 1; after a bump it changes only if the old group became empty and was the minimum.
+    link: https://leetcode.com/problems/lfu-cache/
+    solutions:
+      - title: Frequency buckets of recency-ordered keys, O(1)
+        java: |
+          import java.util.HashMap;
+          import java.util.LinkedHashSet;
+          import java.util.Map;
+
+          class LFUCache {
+              private final int capacity;
+              private int minFreq = 0;
+              private final Map<Integer, int[]> entries = new HashMap<>(); // key -> {value, freq}
+              private final Map<Integer, LinkedHashSet<Integer>> buckets = new HashMap<>(); // freq -> keys, oldest first
+
+              public LFUCache(int capacity) { this.capacity = capacity; }
+
+              private void touch(int key) {
+                  int[] e = entries.get(key);
+                  int f = e[1];
+                  LinkedHashSet<Integer> bucket = buckets.get(f);
+                  bucket.remove(key);
+                  if (bucket.isEmpty()) {
+                      buckets.remove(f);
+                      if (minFreq == f) minFreq++;
+                  }
+                  e[1] = f + 1;
+                  buckets.computeIfAbsent(f + 1, x -> new LinkedHashSet<>()).add(key);
+              }
+
+              public int get(int key) {
+                  int[] e = entries.get(key);
+                  if (e == null) return -1;
+                  touch(key);
+                  return e[0];
+              }
+
+              public void put(int key, int value) {
+                  if (capacity == 0) return;
+                  int[] e = entries.get(key);
+                  if (e != null) {
+                      e[0] = value;
+                      touch(key);
+                      return;
+                  }
+                  if (entries.size() == capacity) {
+                      LinkedHashSet<Integer> bucket = buckets.get(minFreq);
+                      int victim = bucket.iterator().next(); // least recently used in the bucket
+                      bucket.remove(victim);
+                      if (bucket.isEmpty()) buckets.remove(minFreq);
+                      entries.remove(victim);
+                  }
+                  entries.put(key, new int[] {value, 1});
+                  buckets.computeIfAbsent(1, x -> new LinkedHashSet<>()).add(key);
+                  minFreq = 1;
+              }
+          }
+        cpp: |
+          #include <iterator>
+          #include <list>
+          #include <unordered_map>
+          #include <utility>
+
+          class LFUCache {
+              int capacity, minFreq = 0;
+              std::unordered_map<int, std::pair<int, int>> entries;           // key -> {value, freq}
+              std::unordered_map<int, std::list<int>> buckets;                // freq -> keys, front = oldest
+              std::unordered_map<int, std::list<int>::iterator> pos;          // key -> place in its bucket
+
+              void touch(int key) {
+                  int f = entries[key].second;
+                  auto& bucket = buckets[f];
+                  bucket.erase(pos[key]);
+                  if (bucket.empty()) {
+                      buckets.erase(f);
+                      if (minFreq == f) minFreq++;
+                  }
+                  entries[key].second = f + 1;
+                  auto& next = buckets[f + 1];
+                  next.push_back(key);
+                  pos[key] = std::prev(next.end());
+              }
+
+          public:
+              explicit LFUCache(int capacity) : capacity(capacity) {}
+
+              int get(int key) {
+                  if (!entries.count(key)) return -1;
+                  touch(key);
+                  return entries[key].first;
+              }
+
+              void put(int key, int value) {
+                  if (capacity == 0) return;
+                  if (entries.count(key)) {
+                      entries[key].first = value;
+                      touch(key);
+                      return;
+                  }
+                  if ((int)entries.size() == capacity) {
+                      auto& bucket = buckets[minFreq];
+                      int victim = bucket.front();
+                      bucket.pop_front();
+                      if (bucket.empty()) buckets.erase(minFreq);
+                      entries.erase(victim);
+                      pos.erase(victim);
+                  }
+                  entries[key] = {value, 1};
+                  auto& ones = buckets[1];
+                  ones.push_back(key);
+                  pos[key] = std::prev(ones.end());
+                  minFreq = 1;
+              }
+          };
+      - title: Ordered set by (count, last use), O(log n)
+        java: |
+          import java.util.HashMap;
+          import java.util.Map;
+          import java.util.TreeSet;
+
+          class LFUCache {
+              private static class Node {
+                  int key, value, freq = 1;
+                  long tick;
+                  Node(int key, int value, long tick) { this.key = key; this.value = value; this.tick = tick; }
+              }
+
+              private final int capacity;
+              private long tick = 0;
+              private final Map<Integer, Node> map = new HashMap<>();
+              private final TreeSet<Node> order = new TreeSet<>(
+                  (a, b) -> a.freq != b.freq ? Integer.compare(a.freq, b.freq) : Long.compare(a.tick, b.tick));
+
+              public LFUCache(int capacity) { this.capacity = capacity; }
+
+              private void bump(Node n) {
+                  order.remove(n); // remove before changing the sort key
+                  n.freq++;
+                  n.tick = ++tick;
+                  order.add(n);
+              }
+
+              public int get(int key) {
+                  Node n = map.get(key);
+                  if (n == null) return -1;
+                  bump(n);
+                  return n.value;
+              }
+
+              public void put(int key, int value) {
+                  if (capacity == 0) return;
+                  Node n = map.get(key);
+                  if (n != null) {
+                      n.value = value;
+                      bump(n);
+                      return;
+                  }
+                  if (map.size() == capacity) map.remove(order.pollFirst().key);
+                  n = new Node(key, value, ++tick);
+                  map.put(key, n);
+                  order.add(n);
+              }
+          }
+        cpp: |
+          #include <set>
+          #include <tuple>
+          #include <unordered_map>
+
+          class LFUCache {
+              struct Info { int value, freq; long long tick; };
+              int capacity;
+              long long tick = 0;
+              std::unordered_map<int, Info> map;
+              std::set<std::tuple<int, long long, int>> order; // (freq, tick, key), smallest = victim
+
+              void bump(int key) {
+                  Info& i = map[key];
+                  order.erase({i.freq, i.tick, key});
+                  i.freq++;
+                  i.tick = ++tick;
+                  order.insert({i.freq, i.tick, key});
+              }
+
+          public:
+              explicit LFUCache(int capacity) : capacity(capacity) {}
+
+              int get(int key) {
+                  auto it = map.find(key);
+                  if (it == map.end()) return -1;
+                  bump(key);
+                  return it->second.value;
+              }
+
+              void put(int key, int value) {
+                  if (capacity == 0) return;
+                  auto it = map.find(key);
+                  if (it != map.end()) {
+                      it->second.value = value;
+                      bump(key);
+                      return;
+                  }
+                  if ((int)map.size() == capacity) {
+                      map.erase(std::get<2>(*order.begin()));
+                      order.erase(order.begin());
+                  }
+                  map[key] = {value, 1, ++tick};
+                  order.insert({1, tick, key});
+              }
+          };
+
+  - id: all-oone-01
+    level: staff
+    type: coding
+    q: >-
+      All O`one Data Structure (LeetCode 432). Keep counts for string keys with
+      `inc` (add 1, inserting the key at 1), `dec` (subtract 1, deleting the key
+      at 0; the key is guaranteed to exist), `getMaxKey` and `getMinKey` (any
+      key with the largest or smallest count, or "" if there are none). Every
+      operation must run in O(1) average time.
+    explain: >-
+      This is the same frequency-bucket trick that makes LFU O(1). Keep a
+      doubly linked list of count buckets in ascending order and a map from
+      key to its bucket. Counts change by exactly 1, so a key only moves to a
+      neighbouring bucket, which you create or delete on demand; the min and
+      max are the first and last buckets. The ordered-map alternative (count
+      to keys) is simpler, but each inc or dec is O(log d) where d is the
+      number of distinct counts, so it trades the O(1) bound for simplicity.
+    hints:
+      - A hash map of counts handles inc and dec, but not min and max.
+      - Group keys by count and keep the groups sorted by count.
+      - Counts change by exactly 1, so a key only moves to the neighbouring group. Use a doubly linked list of groups and create or delete groups as needed.
+    link: https://leetcode.com/problems/all-oone-data-structure/
+    solutions:
+      - title: Doubly linked list of count buckets, O(1)
+        java: |
+          import java.util.HashMap;
+          import java.util.LinkedHashSet;
+          import java.util.Map;
+          import java.util.Set;
+
+          class AllOne {
+              private static class Bucket {
+                  final int count;
+                  final Set<String> keys = new LinkedHashSet<>();
+                  Bucket prev, next;
+                  Bucket(int count) { this.count = count; }
+              }
+
+              private final Bucket head = new Bucket(0), tail = new Bucket(0); // sentinels, ascending counts
+              private final Map<String, Bucket> where = new HashMap<>();
+
+              public AllOne() {
+                  head.next = tail;
+                  tail.prev = head;
+              }
+
+              private Bucket insertAfter(Bucket p, int count) {
+                  Bucket b = new Bucket(count);
+                  b.prev = p;
+                  b.next = p.next;
+                  p.next.prev = b;
+                  p.next = b;
+                  return b;
+              }
+
+              private void removeKey(Bucket b, String key) {
+                  b.keys.remove(key);
+                  if (b.keys.isEmpty()) {
+                      b.prev.next = b.next;
+                      b.next.prev = b.prev;
+                  }
+              }
+
+              public void inc(String key) {
+                  Bucket b = where.get(key);
+                  Bucket anchor = b == null ? head : b;
+                  int want = anchor.count + 1;
+                  Bucket target = anchor.next;
+                  if (target == tail || target.count != want) target = insertAfter(anchor, want);
+                  target.keys.add(key);
+                  where.put(key, target);
+                  if (b != null) removeKey(b, key);
+              }
+
+              public void dec(String key) {
+                  Bucket b = where.get(key);
+                  if (b.count == 1) {
+                      where.remove(key);
+                  } else {
+                      Bucket target = b.prev;
+                      if (target == head || target.count != b.count - 1) target = insertAfter(b.prev, b.count - 1);
+                      target.keys.add(key);
+                      where.put(key, target);
+                  }
+                  removeKey(b, key);
+              }
+
+              public String getMaxKey() {
+                  return tail.prev == head ? "" : tail.prev.keys.iterator().next();
+              }
+
+              public String getMinKey() {
+                  return head.next == tail ? "" : head.next.keys.iterator().next();
+              }
+          }
+        cpp: |
+          #include <iterator>
+          #include <list>
+          #include <string>
+          #include <unordered_map>
+          #include <unordered_set>
+
+          class AllOne {
+              struct Bucket {
+                  int count;
+                  std::unordered_set<std::string> keys;
+              };
+              std::list<Bucket> buckets; // ascending by count, never holds an empty bucket
+              std::unordered_map<std::string, std::list<Bucket>::iterator> where;
+
+          public:
+              void inc(const std::string& key) {
+                  auto f = where.find(key);
+                  if (f == where.end()) {
+                      if (buckets.empty() || buckets.front().count != 1) buckets.push_front({1, {}});
+                      buckets.front().keys.insert(key);
+                      where[key] = buckets.begin();
+                      return;
+                  }
+                  auto cur = f->second;
+                  auto next = std::next(cur);
+                  if (next == buckets.end() || next->count != cur->count + 1)
+                      next = buckets.insert(next, {cur->count + 1, {}});
+                  next->keys.insert(key);
+                  where[key] = next;
+                  cur->keys.erase(key);
+                  if (cur->keys.empty()) buckets.erase(cur);
+              }
+
+              void dec(const std::string& key) {
+                  auto cur = where[key];
+                  if (cur->count == 1) {
+                      where.erase(key);
+                  } else {
+                      if (cur == buckets.begin() || std::prev(cur)->count != cur->count - 1)
+                          buckets.insert(cur, {cur->count - 1, {}});
+                      auto prev = std::prev(cur);
+                      prev->keys.insert(key);
+                      where[key] = prev;
+                  }
+                  cur->keys.erase(key);
+                  if (cur->keys.empty()) buckets.erase(cur);
+              }
+
+              std::string getMaxKey() { return buckets.empty() ? "" : *buckets.back().keys.begin(); }
+              std::string getMinKey() { return buckets.empty() ? "" : *buckets.front().keys.begin(); }
+          };
+      - title: Ordered map from count to keys, O(log d)
+        java: |
+          import java.util.HashMap;
+          import java.util.LinkedHashSet;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.TreeMap;
+
+          class AllOne {
+              private final Map<String, Integer> count = new HashMap<>();
+              private final TreeMap<Integer, Set<String>> byCount = new TreeMap<>();
+
+              private void removeFrom(int c, String key) {
+                  Set<String> s = byCount.get(c);
+                  s.remove(key);
+                  if (s.isEmpty()) byCount.remove(c);
+              }
+
+              private void addTo(int c, String key) {
+                  byCount.computeIfAbsent(c, x -> new LinkedHashSet<>()).add(key);
+              }
+
+              public void inc(String key) {
+                  int c = count.getOrDefault(key, 0);
+                  if (c > 0) removeFrom(c, key);
+                  count.put(key, c + 1);
+                  addTo(c + 1, key);
+              }
+
+              public void dec(String key) {
+                  int c = count.get(key);
+                  removeFrom(c, key);
+                  if (c == 1) {
+                      count.remove(key);
+                  } else {
+                      count.put(key, c - 1);
+                      addTo(c - 1, key);
+                  }
+              }
+
+              public String getMaxKey() {
+                  return byCount.isEmpty() ? "" : byCount.lastEntry().getValue().iterator().next();
+              }
+
+              public String getMinKey() {
+                  return byCount.isEmpty() ? "" : byCount.firstEntry().getValue().iterator().next();
+              }
+          }
+        cpp: |
+          #include <map>
+          #include <string>
+          #include <unordered_map>
+          #include <unordered_set>
+
+          class AllOne {
+              std::unordered_map<std::string, int> count;
+              std::map<int, std::unordered_set<std::string>> byCount;
+
+              void removeFrom(int c, const std::string& key) {
+                  auto it = byCount.find(c);
+                  it->second.erase(key);
+                  if (it->second.empty()) byCount.erase(it);
+              }
+
+          public:
+              void inc(const std::string& key) {
+                  int c = count[key]; // 0 for a new key
+                  if (c > 0) removeFrom(c, key);
+                  count[key] = c + 1;
+                  byCount[c + 1].insert(key);
+              }
+
+              void dec(const std::string& key) {
+                  int c = count[key];
+                  removeFrom(c, key);
+                  if (c == 1) {
+                      count.erase(key);
+                  } else {
+                      count[key] = c - 1;
+                      byCount[c - 1].insert(key);
+                  }
+              }
+
+              std::string getMaxKey() { return byCount.empty() ? "" : *byCount.rbegin()->second.begin(); }
+              std::string getMinKey() { return byCount.empty() ? "" : *byCount.begin()->second.begin(); }
+          };
+
+  - id: lru-trace-01
+    level: beginner
+    type: numeric
+    q: >-
+      An LRU cache with capacity 3 starts empty. It sees the access sequence
+      A B C A D B C A. How many of the 8 accesses are hits?
+    answer: 1
+    tolerance: 0
+    unit: hits
+    explain: >-
+      Trace (least recent first): A miss [A], B miss [A B], C miss [A B C],
+      A hit [B C A], D miss evicts B [C A D], B miss evicts C [A D B], C miss
+      evicts A [D B C], A miss evicts D [B C A]. One hit in eight: a cyclic
+      pattern slightly larger than the cache is LRU's worst case.
+    hints:
+      - Write the cache contents after every access, least recent first.
+      - On a miss with a full cache, the leftmost entry is evicted.
+
+  - id: eviction-lru-vs-scan-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A nightly report scans every row of a large table once, through the same
+      LRU cache that serves the hot working set. What usually happens?
+    options:
+      - Nothing; LRU ignores keys that are read only once
+      - The scan pushes the hot keys out, and the hit ratio drops until they are reloaded
+      - The cache grows to fit the scan
+      - LRU switches to LFU behaviour automatically
+    answer: 1
+    explain: >-
+      Plain LRU treats every newly read key as most recent, so a one-pass scan
+      evicts the hot set (cache pollution). Scan-resistant policies, such as
+      segmented LRU, 2Q, ARC or admission filters, keep a key out of the
+      protected region until it has been seen more than once.
+    hints:
+      - Where does LRU put a key the first time it is read?
+      - How many times is each scanned row read?

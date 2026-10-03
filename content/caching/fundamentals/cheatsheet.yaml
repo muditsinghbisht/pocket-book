@@ -1,0 +1,24 @@
+sections:
+  - heading: Why caches work
+    items:
+      - "**Temporal locality**: recently used data is used again"
+      - "**Spatial locality**: neighbours of used data are used next"
+      - "Skewed access (a few keys get most reads) makes small caches effective"
+  - heading: Formulas
+    items:
+      - "**Hit ratio** = hits / (hits + misses)"
+      - "**AMAT** = hit time + miss ratio x miss penalty"
+      - "**Source load** = total reads x miss ratio"
+      - "**Minimum hit ratio** = 1 - source capacity / total reads"
+      - "**Little's law**: L = lambda x W"
+  - heading: Kinds of miss
+    items:
+      - "**Compulsory (cold)**: first access"
+      - "**Capacity**: working set larger than the cache"
+      - "**Conflict**: keys compete for the same slot"
+      - "**Coherence / invalidation**: the entry was removed because the source changed"
+  - heading: Before adding a cache
+    items:
+      - "Is data re-read often enough to hit?"
+      - "How stale may it be, and who notices?"
+      - "What happens to the source when the cache is empty?"

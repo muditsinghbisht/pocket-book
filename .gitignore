@@ -1,0 +1,30 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+*.tsbuildinfo
+.vite
+
+# Test and coverage
+coverage
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and editors
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Local-only files
+*.local
+.claude/settings.local.json

@@ -1,0 +1,25 @@
+cards:
+  - front: Temporal locality
+    back: Data used recently is likely to be used again soon. The main reason caches work.
+  - front: Spatial locality
+    back: Data stored near recently used data is likely to be used soon, so caches fetch whole blocks or lines.
+  - front: Hit ratio
+    back: Hits / (hits + misses).
+  - front: Miss ratio and database load
+    back: Only misses reach the source, so its load is proportional to 1 - hit ratio. 90% to 95% halves it.
+  - front: AMAT
+    back: Average memory (or access) time = hit time + miss ratio x miss penalty.
+  - front: Compulsory miss
+    back: The first access to a key; it cannot be a hit because the key was never cached. Also called a cold miss.
+  - front: Capacity miss
+    back: A miss because the working set is larger than the cache, so useful entries were evicted.
+  - front: Conflict miss
+    back: A miss because entries compete for the same slot (set or bucket), even though the cache has free space elsewhere.
+  - front: Working set
+    back: The set of data a workload actively uses over a time window. If it fits in the cache, the hit ratio is high.
+  - front: Little's law
+    back: Items in a system = arrival rate x time in system (L = lambda x W).
+  - front: Minimum hit ratio for a database with capacity C under R reads/s
+    back: 1 - C / R. Example, 1 - 2,000 / 10,000 = 80%.
+  - front: When not to cache
+    back: When data is rarely re-read, must always be fresh, or is cheap to compute; the cache then adds cost, staleness and failure modes for little gain.

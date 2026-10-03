@@ -1,0 +1,3 @@
+title: Write policies and caching patterns
+summary: Write-through, write-back, write-around, cache-aside, read-through and refresh-ahead, with their consistency and failure tradeoffs.
+order: 3

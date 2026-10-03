@@ -1,0 +1,64 @@
+questions:
+  - id: write-back-risk-01
+    level: beginner
+    type: mcq
+    q: >-
+      A write-back (write-behind) cache acknowledges a write as soon as it is
+      in the cache and writes it to the database later. What is the main risk?
+    options:
+      - Reads become slower
+      - Acknowledged writes can be lost if the cache fails before it flushes them
+      - Every write is applied to the database twice
+      - The cache can never be full
+    answer: 1
+    explain: >-
+      Write-back gives low write latency and lets the cache batch or coalesce
+      writes, but until a dirty entry is flushed the only copy lives in the
+      cache. Write-through avoids that by writing the database before
+      acknowledging, at the cost of write latency.
+    hints:
+      - Where is the only copy of a write right after it is acknowledged?
+      - What happens to that copy if the cache node crashes?
+
+  - id: write-through-vs-around-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A service writes many records that are rarely read again soon after.
+      Which write policy avoids filling the cache with them?
+    options:
+      - Write-through
+      - Write-around (write to the database only; load into the cache on a later read miss)
+      - Write-back
+      - Refresh-ahead
+    answer: 1
+    explain: >-
+      Write-around skips the cache on writes, so only data that is actually
+      read gets cached. The cost is that the first read after a write is a
+      miss. Write-through and write-back both put every written record in the
+      cache.
+    hints:
+      - Which policy does not touch the cache on a write?
+      - Data enters the cache only when someone reads it.
+
+  - id: write-policy-choice-01
+    level: advanced
+    type: free
+    q: >-
+      Cache-aside, write-through or write-behind: choose one for a shopping
+      cart, a game leaderboard and an audit log, and defend each choice.
+    answer: >-
+      Shopping cart: cache-aside or write-through, with the durable store as
+      the source of truth, because losing a cart is costly and visible.
+      Leaderboard: write-behind or in-cache aggregation is acceptable; the
+      write rate is high and losing a few score updates in a failure is
+      tolerable, or can be rebuilt from events. Audit log: do not cache the
+      writes at all; write durably first, because the log's only job is to be
+      complete. Justify each with durability, consistency, write load and
+      operational complexity.
+    explain: >-
+      The point is that the policy follows from the cost of losing or
+      misreading a write, not from habit.
+    hints:
+      - What does it cost if the last few seconds of writes disappear?
+      - Which of these is read far more than written, and which is the reverse?

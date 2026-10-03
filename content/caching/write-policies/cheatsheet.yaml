@@ -1,0 +1,21 @@
+sections:
+  - heading: Write policies
+    items:
+      - "**Write-through**: cache + store, then ack. Safe, slower writes"
+      - "**Write-back**: cache, ack, flush later. Fast, can lose data"
+      - "**Write-around**: store only. Avoids polluting the cache"
+  - heading: Read patterns
+    items:
+      - "**Cache-aside**: app owns the miss path"
+      - "**Read-through**: cache owns the miss path"
+      - "**Refresh-ahead**: reload hot keys before they expire"
+  - heading: Pitfalls
+    items:
+      - "Dual writes without ordering or a log drift apart"
+      - "Set-on-write races; prefer delete-on-write"
+      - "Write-back needs durable flushing and a plan for node loss"
+  - heading: Picking one
+    items:
+      - "Losing writes is unacceptable: write-through or store first"
+      - "High write rate, loss tolerable: write-back or aggregation"
+      - "Written once, rarely read: write-around"

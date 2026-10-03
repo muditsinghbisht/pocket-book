@@ -1,0 +1,22 @@
+sections:
+  - heading: Cache-Control
+    items:
+      - "**max-age=N**: fresh for N s in any cache"
+      - "**s-maxage=N**: shared caches only; overrides max-age there"
+      - "**no-cache**: store, but revalidate before reuse"
+      - "**no-store**: never store"
+      - "**private**: browser only, not the CDN"
+      - "**public**: any cache may store"
+  - heading: Revalidation
+    items:
+      - "**ETag** + If-None-Match, or Last-Modified + If-Modified-Since"
+      - "304 Not Modified saves the body, not the round trip"
+  - heading: Getting good hit ratios
+    items:
+      - "Keep the cache key small; avoid needless Vary and query strings"
+      - "Version static asset URLs and cache them for a long time"
+      - "Purge by URL or tag for content that must change now"
+  - heading: Risks
+    items:
+      - "Never cache personalised responses in a shared cache"
+      - "A shared CDN is a dependency for every site on it"

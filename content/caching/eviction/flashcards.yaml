@@ -1,0 +1,21 @@
+cards:
+  - front: LRU
+    back: Least recently used. Evict the entry whose last access is oldest. O(1) with a hash map plus a doubly linked list.
+  - front: LFU
+    back: Least frequently used. Evict the entry with the fewest accesses; break ties by recency. O(1) with frequency buckets.
+  - front: FIFO
+    back: Evict the oldest inserted entry, regardless of use. Simple, but ignores how hot an entry is.
+  - front: Random eviction
+    back: Evict a random entry. Cheap, no metadata, and surprisingly competitive on some workloads.
+  - front: CLOCK
+    back: An LRU approximation. Entries sit in a circular buffer with a reference bit; the hand clears bits and evicts the first entry whose bit is already clear.
+  - front: Belady's optimal (MIN)
+    back: Evict the entry that will be used furthest in the future. Not implementable online, but the upper bound for comparing policies.
+  - front: Cache pollution by scans
+    back: A one-time scan fills an LRU cache with keys that will not be reused, pushing out the hot set.
+  - front: Scan-resistant policies
+    back: Segmented LRU, 2Q, ARC and admission filters keep new keys on probation until they are reused.
+  - front: LRU worst case
+    back: A cyclic access pattern slightly larger than the cache gives 0% hits after warm-up (capacity 3, A B C D repeated).
+  - front: LFU weakness
+    back: Old popular keys keep high counts and stay forever unless counts decay or age.

@@ -1,0 +1,21 @@
+cards:
+  - front: Write-through
+    back: Write to the cache and the backing store before acknowledging. Consistent and durable, but every write pays the store's latency.
+  - front: Write-back (write-behind)
+    back: Acknowledge after writing the cache and flush to the store later. Fast and can batch writes, but unflushed writes can be lost.
+  - front: Write-around
+    back: Write only the backing store; the cache is filled on a later read miss. Keeps write-once data out of the cache.
+  - front: Cache-aside
+    back: The application reads the cache, loads from the database on a miss and fills the cache; on writes it updates the database and invalidates the key.
+  - front: Read-through
+    back: The cache itself loads missing data from the backing store, so the application only talks to the cache.
+  - front: Refresh-ahead
+    back: Reload entries that are about to expire before they expire, so hot keys rarely miss.
+  - front: Dirty entry
+    back: A cached value newer than the backing store (in write-back) that must be flushed before it is evicted.
+  - front: Dual-write problem
+    back: Writing the database and the cache (or a queue) as two separate steps; a crash or race between them leaves them inconsistent.
+  - front: Why delete instead of update the cache on write
+    back: Concurrent writers can set the cache in a different order than the database commits; a delete is order-insensitive.
+  - front: Choosing a policy
+    back: Start from what it costs to lose or misread a write, then weigh write latency, read-after-write needs and complexity.

@@ -1,0 +1,22 @@
+questions:
+  - id: layers-order-01
+    level: beginner
+    type: mcq
+    q: >-
+      A web request can be answered at several cache layers. Which order runs
+      from closest to the user to closest to the data?
+    options:
+      - Database buffer pool, application cache, CDN, browser cache
+      - Browser cache, CDN, application cache, database buffer pool
+      - CDN, browser cache, database buffer pool, application cache
+      - Application cache, browser cache, CDN, database buffer pool
+    answer: 1
+    explain: >-
+      The browser checks its own cache first, then the request may be served
+      by a CDN edge, then the application may hit its cache (for example
+      Redis or Memcached), and finally the database serves pages from its
+      buffer pool before going to disk. Each layer that answers saves every
+      layer behind it.
+    hints:
+      - Follow the request from the user's device to the disk.
+      - Which of these caches runs on the user's own device?

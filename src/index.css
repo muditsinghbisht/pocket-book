@@ -1,0 +1,229 @@
+@import "tailwindcss";
+
+/*
+ * Color system. Components use only these semantic tokens (bg-surface,
+ * text-muted, border-line, ...), never raw palette colors, so a theme is just a
+ * set of values. Dark values apply on screen only: printing always uses light.
+ * All text/background pairs meet WCAG AA (4.5:1) in both themes.
+ */
+:root {
+  color-scheme: light;
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --subtle: #f3f2ef;
+  --fg: #1c1917;
+  --muted: #57534e;
+  --line: #e7e5e4;
+  --line-strong: #d6d3d1;
+  --primary: #4338ca;
+  --primary-fg: #ffffff;
+  --primary-soft: #eef2ff;
+  --success: #15803d;
+  --warn: #92400e;
+  --warn-soft: #fef3c7;
+  --danger: #b91c1c;
+  --code: #f5f5f4;
+  --code-fg: #1c1917;
+  --callout: #f3f4ff;
+  --callout-line: #6366f1;
+
+  /* Accents: one per section tab and per level. Used through --tone. */
+  --c-lessons: #4338ca;
+  --c-case-studies: #be123c;
+  --c-practice: #9a3412;
+  --c-quizzes: #6d28d9;
+  --c-flashcards: #0f766e;
+  --c-cheatsheet: #0369a1;
+  --c-notes: #047857;
+  --c-beginner: #047857;
+  --c-intermediate: #0369a1;
+  --c-advanced: #92400e;
+  --c-staff: #a21caf;
+  --tone: var(--primary);
+}
+
+@media screen {
+  .dark {
+    color-scheme: dark;
+    --bg: #0f1117;
+    --surface: #161922;
+    --subtle: #1f2330;
+    --fg: #e6e8ee;
+    --muted: #a3a9b7;
+    --line: #2a2f3d;
+    --line-strong: #3b4254;
+    --primary: #a5b4fc;
+    --primary-fg: #0f1117;
+    --primary-soft: #1e2142;
+    --success: #4ade80;
+    --warn: #fcd34d;
+    --warn-soft: #3a2c0a;
+    --danger: #fca5a5;
+    --code: #0b0d12;
+    --code-fg: #e6e8ee;
+    --callout: #191c33;
+    --callout-line: #818cf8;
+
+    --c-lessons: #a5b4fc;
+    --c-case-studies: #fda4af;
+    --c-practice: #fcd34d;
+    --c-quizzes: #c4b5fd;
+    --c-flashcards: #5eead4;
+    --c-cheatsheet: #7dd3fc;
+    --c-notes: #6ee7b7;
+    --c-beginner: #6ee7b7;
+    --c-intermediate: #7dd3fc;
+    --c-advanced: #fcd34d;
+    --c-staff: #f0abfc;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-code: var(--code);
+  --color-code-fg: var(--code-fg);
+  --color-tone: var(--tone);
+  --font-serif:
+    Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+}
+
+/* Code blocks (lessons, hints and solutions); scroll instead of overflowing. */
+@utility code-block {
+  @apply overflow-x-auto rounded-lg border border-line bg-code p-4 font-mono text-[13px] leading-relaxed text-code-fg sm:text-sm;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-fg antialiased;
+  }
+  :focus-visible {
+    outline-color: var(--primary);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 25%, transparent);
+  }
+}
+
+@layer components {
+  /* Small pill colored by --tone (levels, section counts). */
+  .badge {
+    @apply inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap;
+    color: var(--tone);
+    background: color-mix(in srgb, var(--tone) 10%, var(--surface));
+    border-color: color-mix(in srgb, var(--tone) 30%, var(--surface));
+  }
+  .badge-warn {
+    @apply inline-flex items-center rounded-full border border-warn/30 bg-warn-soft px-2 py-0.5 text-xs font-semibold text-warn;
+  }
+
+  /* A list item or panel. */
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)];
+  }
+  a.card,
+  summary.card {
+    @apply transition-colors hover:border-line-strong hover:bg-subtle;
+  }
+
+  /* Mermaid diagram box; the SVG keeps its natural size and the box scrolls. */
+  .diagram {
+    @apply my-6 overflow-x-auto rounded-lg border border-line bg-surface p-4 text-sm text-muted;
+  }
+
+  /* Lesson and case-study typography (rendered MDX). */
+  .prose {
+    @apply font-serif text-[1.0625rem] leading-[1.75] text-pretty;
+  }
+  .prose :where(h1, h2, h3, h4) {
+    @apply font-sans tracking-tight text-balance;
+  }
+  .prose :where(h1) {
+    @apply mt-2 mb-6 text-3xl leading-tight font-bold sm:text-4xl;
+  }
+  .prose :where(h2) {
+    @apply mt-12 mb-4 border-b border-line pb-2 text-2xl leading-snug font-semibold;
+  }
+  .prose :where(h3) {
+    @apply mt-8 mb-3 text-xl font-semibold;
+  }
+  .prose :where(h4) {
+    @apply mt-6 mb-2 font-semibold;
+  }
+  .prose :where(p, ul, ol) {
+    @apply my-5;
+  }
+  .prose :where(li) {
+    @apply my-1.5 pl-1;
+  }
+  .prose :where(li)::marker {
+    @apply text-muted;
+  }
+  .prose :where(ul) {
+    @apply list-disc pl-6;
+  }
+  .prose :where(ol) {
+    @apply list-decimal pl-6;
+  }
+  .prose :where(strong) {
+    @apply font-semibold;
+  }
+  .prose :where(a) {
+    @apply break-words text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary;
+  }
+  .prose :where(code) {
+    @apply rounded border border-line bg-subtle px-1.5 py-px font-mono text-[0.85em];
+  }
+  .prose :where(pre) {
+    @apply code-block my-6;
+  }
+  .prose :where(pre code) {
+    @apply border-0 bg-transparent p-0 text-[1em];
+  }
+  .prose :where(.table-wrap) {
+    @apply my-6 overflow-x-auto rounded-lg border border-line;
+  }
+  .prose :where(table) {
+    @apply min-w-full border-collapse font-sans text-sm;
+  }
+  .prose :where(th) {
+    @apply bg-subtle font-semibold;
+  }
+  .prose :where(th, td) {
+    @apply border-b border-line px-3 py-2 text-left align-top;
+  }
+  .prose :where(tr:last-child td) {
+    @apply border-b-0;
+  }
+  .prose :where(blockquote) {
+    @apply my-6 rounded-r-lg border-l-4 px-5 py-1;
+    border-color: var(--callout-line);
+    background: var(--callout);
+  }
+  .prose :where(hr) {
+    @apply my-10 border-line;
+  }
+  .prose :where(img) {
+    @apply max-w-full rounded-lg;
+  }
+}
+
+@media print {
+  /* A diagram rendered while dark has light strokes; invert it for paper. */
+  .dark .diagram svg {
+    filter: invert(1) hue-rotate(180deg);
+  }
+}

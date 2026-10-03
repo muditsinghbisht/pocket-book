@@ -1,0 +1,21 @@
+cards:
+  - front: Cache stampede
+    back: A hot key expires or is invalidated and many concurrent requests miss and rebuild it at once.
+  - front: Stampede size estimate
+    back: Arrival rate x rebuild time. 5,000 req/s x 0.2 s = 1,000 duplicate rebuilds.
+  - front: Request coalescing (single-flight)
+    back: Only one request rebuilds a missing key; concurrent requests for the same key wait for its result.
+  - front: TTL jitter
+    back: Randomize TTLs (for example 60 min plus or minus 10%) so keys written together do not expire together.
+  - front: Probabilistic early expiration (XFetch)
+    back: Each read may refresh a key shortly before it expires, with a probability that rises as expiry nears, so one reader refreshes early.
+  - front: Stale-while-revalidate
+    back: Serve the expired value immediately while one background request refreshes it.
+  - front: Cache penetration
+    back: Requests for keys that do not exist always miss and hit the database. Cache negative results or use a Bloom filter.
+  - front: Cold start
+    back: An empty cache (new deploy, restart, new region) sends all reads to the source. Pre-warm and ramp traffic.
+  - front: Hot key
+    back: One key gets so much traffic that its single cache node saturates. Replicate the key or add a local near cache.
+  - front: Load shedding
+    back: Reject or degrade some requests on purpose so the source stays healthy enough for the cache to refill.

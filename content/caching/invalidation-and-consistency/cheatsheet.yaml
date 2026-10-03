@@ -1,0 +1,21 @@
+sections:
+  - heading: Ways to invalidate
+    items:
+      - "**TTL**: simple, bounded staleness, always keep one"
+      - "**Explicit delete on write**: fresh, but every writer must remember"
+      - "**Event-driven**: change log or events drive deletes"
+      - "**Versioned keys**: new version, new key; old ones age out"
+  - heading: Races and fixes
+    items:
+      - "**Set-on-write race**: delete instead of set"
+      - "**Stale fill after invalidate**: leases or versions"
+      - "**Lost invalidation**: TTL backstop, retries, tracing"
+  - heading: Consistency goals
+    items:
+      - "**Eventual**: copies converge when writes stop"
+      - "**Read-your-writes**: bypass or pin after a write"
+      - "**Bounded staleness**: TTL sets the bound"
+  - heading: Operate it
+    items:
+      - "Measure inconsistency; do not assume it"
+      - "Trace invalidations end to end"

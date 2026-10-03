@@ -1,0 +1,66 @@
+questions:
+  - id: restart-cold-cache-01
+    level: staff
+    type: numeric
+    q: >-
+      A cache has a 98% hit ratio with keys spread evenly over its nodes. 25%
+      of the nodes restart and come back empty. Assuming every key on those
+      nodes was a hit before, and ignoring refill, by what factor does
+      database read load grow right after the restart?
+    answer: 13.25
+    tolerance: 0.5
+    unit: x
+    explain: >-
+      Hits now come only from the 75% of nodes that kept their data: 0.98 x
+      0.75 = 0.735. The miss ratio goes from 2% to 26.5%, and 26.5 / 2 =
+      13.25, so about 13x. Losing a quarter of a cache can multiply database
+      load by an order of magnitude, which is the pattern in Slack's 2-22-22
+      incident.
+    hints:
+      - Which hits survive the restart?
+      - Compare the new miss ratio with the old one.
+
+  - id: error-as-miss-01
+    level: advanced
+    type: mcq
+    q: >-
+      When a fetch from the database fails, a client deletes the cache key and
+      retries the database. Why is this dangerous?
+    options:
+      - Deleting keys is slow in most caches
+      - While the database is overloaded, each failure removes a cached value and adds more database load, a loop that can outlast the original fault
+      - It makes the cache return stale data
+      - It breaks consistent hashing
+    answer: 1
+    explain: >-
+      Treating an error as "the value is invalid" turns a database slowdown
+      into more misses, which means more database load, which means more
+      errors. That feedback loop kept Facebook's site down in September 2010
+      until traffic to the database was cut off. Distinguish errors from
+      invalid values, back off, and use circuit breakers.
+    hints:
+      - What does each failure do to the number of future database reads?
+      - Does a database error tell you anything about whether the cached value was wrong?
+
+  - id: cache-feedback-loop-01
+    level: advanced
+    type: free
+    q: >-
+      Explain how a cache can turn a short database problem into a long
+      outage, as in Facebook's September 2010 incident, and how you would
+      design against it.
+    answer: >-
+      If a client treats a fetch error as a miss or an invalid value, it
+      deletes the cached key and asks the database again. While the database
+      is struggling, every error removes cached data and adds load, so the
+      overload persists even after the original cause is gone. Defences: never
+      treat an error as invalid data; exponential backoff with jitter on the
+      miss path; circuit breakers; request coalescing so one key causes one
+      fetch; load shedding; and an operational way to cut traffic to the
+      datastore and bring it back gradually.
+    explain: >-
+      Look for the feedback loop (error, delete, more load, more errors) and
+      for defences that break it at more than one point.
+    hints:
+      - What does the client do when the database returns an error?
+      - Why would the problem persist after the original cause is fixed?

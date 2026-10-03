@@ -1,0 +1,25 @@
+sections:
+  - heading: Failure taxonomy
+    items:
+      - "**Cold cache**: restart, deploy or resharding empties it"
+      - "**Stampede**: synchronized misses on hot keys"
+      - "**Feedback loop**: errors cause deletes cause more load"
+      - "**Inconsistency**: fills and invalidations race"
+      - "**Hot key**: one node saturates"
+  - heading: Analysis template
+    items:
+      - "Context, what happened, root cause, fix, lessons, sources"
+  - heading: Design review checklist
+    items:
+      - "Can the source survive an empty cache? If not, how is warm-up controlled?"
+      - "Are errors ever treated as invalid data?"
+      - "Is the miss path coalesced, rate limited and backed off?"
+      - "How are fills ordered against invalidations?"
+      - "Is consistency measured?"
+      - "Is there a lever to shed load while the cache refills?"
+  - heading: Cases in this chapter
+    items:
+      - "Facebook, Scaling Memcache: leases"
+      - "Facebook, September 2010: the repair loop"
+      - "Slack, 2-22-22: cold cache after restarts"
+      - "Meta, Cache made consistent: measuring consistency"

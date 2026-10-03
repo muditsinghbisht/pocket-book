@@ -1,0 +1,41 @@
+questions:
+  - id: cache-capacity-nodes-01
+    level: intermediate
+    type: numeric
+    q: >-
+      You need to cache 40 million items. Each takes 500 B of value plus 100 B
+      of overhead. Every node has 16 GB of RAM, of which 75% is usable for
+      cache data, and you want 2 copies of every item. What is the minimum
+      number of nodes? Use 1 GB = 10^9 B and ignore skew and headroom.
+    answer: 4
+    tolerance: 0
+    unit: nodes
+    explain: >-
+      Data: 40 x 10^6 x 600 B = 24 x 10^9 B = 24 GB. Two copies: 48 GB. Usable
+      per node: 0.75 x 16 GB = 12 GB. 48 / 12 = 4 nodes. In practice you would
+      add headroom for skew, growth and losing a node.
+    hints:
+      - Compute bytes per item first, including overhead.
+      - Replication multiplies the data; only usable memory counts per node.
+
+  - id: consistent-hashing-01
+    level: advanced
+    type: mcq
+    q: >-
+      Keys are placed on 9 cache nodes with hash(key) mod N, and a 10th node is
+      added. Roughly what fraction of keys moves to a different node? And with
+      (ideal) consistent hashing?
+    options:
+      - mod N about 10%, consistent hashing about 90%
+      - mod N about 90%, consistent hashing about 10%
+      - Both about 50%
+      - Both about 10%
+    answer: 1
+    explain: >-
+      A key stays put only if h mod 9 = h mod 10. Over each block of 90 hash
+      values that holds just for 0..8, which is 9/90 = 10%, so about 90% of
+      keys move and most of the cache goes cold at once. Consistent hashing
+      only moves the keys the new node takes over, about 1/10.
+    hints:
+      - When is h mod 9 equal to h mod 10?
+      - With consistent hashing, which keys change owner when a node joins?

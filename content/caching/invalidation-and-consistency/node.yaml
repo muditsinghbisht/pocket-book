@@ -1,0 +1,3 @@
+title: Invalidation, TTL and consistency
+summary: Why invalidation is hard, designing TTLs, explicit and event-driven invalidation, races, leases and consistency models for caches.
+order: 5
