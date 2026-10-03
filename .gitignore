@@ -28,3 +28,4 @@ npm-debug.log*
 # Local-only files
 *.local
 .claude/settings.local.json
+.claude/worktrees/

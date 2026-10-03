@@ -1,0 +1,3 @@
+title: Graph RAG
+summary: Retrieval over a knowledge graph - when vector RAG fails, building the graph, local and global search, and when the cost is worth it.
+order: 4

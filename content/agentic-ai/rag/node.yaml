@@ -1,0 +1,3 @@
+title: Retrieval-augmented generation (RAG)
+summary: Grounding a language model in your own documents - chunking, retrieval, reranking, context assembly, security and evaluation.
+order: 3

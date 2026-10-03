@@ -1,0 +1,3 @@
+title: Embeddings and vector search
+summary: How text becomes vectors, how similarity is measured, and how vector indexes (IVF, product quantization, HNSW) and vector databases find nearest neighbours fast.
+order: 2
