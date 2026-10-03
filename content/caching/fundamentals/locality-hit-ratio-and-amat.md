@@ -26,6 +26,18 @@ Notice the word _likely_. A cache never knows what will be requested next. It ma
 
 This chapter builds the vocabulary and the arithmetic. Later chapters, including the lessons on eviction, on invalidation and on stampedes, assume you can do the calculations here without hesitation.
 
+The gaps between levels are what make the bet worth placing. The figures are orders of magnitude from the paragraph above, not measurements.
+
+| Level                           | Rough latency                      | What it means for a cache               |
+| ------------------------------- | ---------------------------------- | --------------------------------------- |
+| CPU register                    | well under 1 ns                    | Never a cache target, the fastest level |
+| Main memory                     | about 100 ns                       | The "slow store" for CPU caches         |
+| SSD                             | tens to hundreds of microseconds   | The "slow store" for the OS page cache  |
+| Round trip inside a data centre | a few hundred microseconds to 1 ms | The cost of reaching a remote cache     |
+| Round trip across an ocean      | about 100 ms                       | The cost a CDN edge exists to avoid     |
+
+> **Key idea:** A cache is a small, fast store placed in front of a large, slow one. It only pays off if the data is requested again, so everything that follows is about measuring and improving that bet.
+
 ## 2. Why the bet usually pays: locality
 
 Caching works because real access patterns are not random. Programs, users and networks exhibit **locality of reference**, which comes in two main flavours.
@@ -53,6 +65,22 @@ Two further regularities deserve a name because they matter later.
 
 If your workload has no locality, a cache cannot help you. A system that reads each of a billion records exactly once will see a hit ratio of zero no matter how big the cache is. Establishing that locality exists is therefore the first step of any caching decision.
 
+```mermaid
+mindmap
+  root((Why caches work))
+    Temporal locality
+      Used recently so used again soon
+      Justifies keeping items, for example LRU
+    Spatial locality
+      Neighbours are used next
+      Justifies fetching a whole line or page
+    Popularity skew
+      A few items get most requests
+    Sequential scans
+      Each item read once
+      Zero reuse, pollutes the cache
+```
+
 ## 3. Measuring a cache: the vocabulary
 
 Let us now define terms carefully, because the sloppy use of these words causes many arguments.
@@ -65,6 +93,21 @@ Let us now define terms carefully, because the sloppy use of these words causes 
 - **Miss penalty** t_d: the _additional_ time a miss costs beyond the lookup. In application caching it is usually the latency of the backing store, such as a database query.
 
 The words "acceptable to return" in the definition of a hit are important. In a cache with expiry, an entry that is present but expired is not a hit. In a cache with invalidation, an entry that is present but known to be stale is not a hit. Different systems draw this line in different places, which is exactly why you must state your definition when you quote a number.
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Cache
+  participant Origin
+  App->>Cache: get key A
+  Cache-->>App: hit, cost t_c
+  App->>Cache: get key B
+  Cache->>Origin: miss, fetch
+  Origin-->>Cache: value
+  Cache-->>App: miss, cost t_c plus t_d
+  App->>Cache: get key C, present but expired
+  Note over Cache: counts as a miss, not a hit
+```
 
 ### 3.1 Request hit ratio versus byte hit ratio
 
@@ -79,6 +122,14 @@ Consider a CDN edge serving 1,000 requests. Nine hundred are for small icons and
 - Byte hit ratio: 9,000 / 509,000 = 0.0177, or about 1.8 percent.
 
 Both numbers are correct. They answer different questions. If your concern is latency per request, the request hit ratio matters. If your concern is origin bandwidth, which you pay for, the byte hit ratio is the one to watch. Quoting "90 percent hit ratio" to a finance team that pays for origin egress would be badly misleading here. Always ask: hit ratio _of what_?
+
+```mermaid
+pie title Bytes in the CDN example (KB)
+  "Served from the cache" : 9000
+  "Fetched from origin" : 500000
+```
+
+> **Key idea:** Request hit ratio drives latency per request. Byte hit ratio drives origin bandwidth and cost. Always ask: hit ratio of what?
 
 ### 3.2 Hit ratio is a property of a workload, not of a cache
 
@@ -129,9 +180,25 @@ AMAT = 1 + 0.01 * 20 = 1.2 ms        (speedup 16.7x)
 
 Plot these in your mind. Going from 50 to 90 percent saves 8 ms. Going from 90 to 99 percent saves only 1.8 ms. The curve flattens, because the floor is the lookup time t_c = 1 ms; no hit ratio can bring AMAT below it. This is the first lesson of the arithmetic: **returns diminish**, and the lookup cost becomes the bottleneck as the hit ratio approaches 1.
 
+```mermaid
+xychart-beta
+  title "AMAT in ms, cache 1 ms, database 20 ms"
+  x-axis ["50%", "90%", "95%", "99%"]
+  y-axis "AMAT (ms)" 0 --> 12
+  line [11, 3, 2, 1.2]
+```
+
+> **Key idea:** AMAT can never drop below the lookup time t_c. As the hit ratio nears 1, the lookup cost is the floor and each extra point buys less.
+
 ### 4.2 The average hides the tail
 
 The average is useful, but users do not experience averages. They experience individual requests, and an individual request is either a 1 ms hit or a 21 ms miss. With h = 0.9, one request in ten takes 21 ms. If a single page view makes thirty such calls, the probability that _none_ of them miss is 0.9 to the thirtieth power, which is about 0.042. Four percent of page views are entirely fast, and ninety-six percent contain at least one slow call. Page latency is dominated by the slowest call. This is why, for latency-sensitive systems, we examine percentiles (p95, p99) and why a hit ratio that looks excellent can still produce a mediocre user experience. High fan-out amplifies the miss ratio.
+
+```mermaid
+pie title Page views with 30 cache calls at a 90 percent hit ratio
+  "Every call fast" : 4.2
+  "At least one slow call" : 95.8
+```
 
 ### 4.3 Break-even: when does a cache make things slower?
 
@@ -152,6 +219,13 @@ AMAT = 1 + 0.90 * 5 = 5.5 ms  versus 5 ms uncached.
 ```
 
 The cache made the system _slower_ by half a millisecond on average, while also costing money, memory and operational complexity. We will return to this in the chapter When to cache and when not to.
+
+| Lookup t_c | Backing store t_d | Break-even hit ratio t_c / t_d | Verdict at 10 % hits |
+| ---------- | ----------------- | ------------------------------ | -------------------- |
+| 1 ms       | 20 ms             | 5 %                            | Cache wins           |
+| 2 ms       | 30 ms             | 6.7 %                          | Cache wins           |
+| 1 ms       | 5 ms              | 20 %                           | Cache loses          |
+| 2 ms       | 8 ms              | 25 %                           | Cache loses          |
 
 ### 4.4 Two levels of cache
 
@@ -182,6 +256,15 @@ flowchart LR
   DB --> C[Answer about 21 ms]
 ```
 
+```mermaid
+pie title Where 100 requests end up in the two-level example
+  "In-process hit" : 60
+  "Redis hit" : 36
+  "Database" : 4
+```
+
+> **Key idea:** The second level's local hit ratio (90 percent) is not the global one. Globally only 4 percent of requests reach the database.
+
 ## 5. Sensitivity: why the miss ratio is the number to watch
 
 When engineers celebrate "99 percent hit ratio" they are looking at the wrong end of the number. What the backing store feels is the **miss traffic**, which is request rate multiplied by miss ratio:
@@ -198,6 +281,14 @@ Suppose a service receives 10,000 requests per second and the database can handl
 | 95 %      | 5 %        | 500 per s     |
 | 98 %      | 2 %        | 200 per s     |
 | 99 %      | 1 %        | 100 per s     |
+
+```mermaid
+xychart-beta
+  title "Database load at 10,000 requests per second"
+  x-axis ["90%", "95%", "98%", "99%"]
+  y-axis "Queries per second" 0 --> 1100
+  bar [1000, 500, 200, 100]
+```
 
 At 90 percent the database is exactly at capacity with zero headroom. A fall from 99 to 98 percent looks trivial in a dashboard that displays hit ratio, yet it **doubles** the database load, from 100 to 200 queries per second. A fall from 99 to 90 percent multiplies the load by ten. This non-linearity is why caches create dangerous dependencies: the system is provisioned on the assumption that the miss ratio stays low, and the database may be too small to survive if it does not. We will study this failure mode in depth in the chapter on stampedes and in the discussion of protecting the database.
 
@@ -232,6 +323,17 @@ In application caches the analogue is a **partitioned or sharded cache** with un
 A **coherence miss** happens because a cached copy was deliberately discarded or declared invalid when the underlying data changed. In a multi-core CPU, one core's write invalidates the copies in other cores' caches. In an application, a write to the database deletes the cached entry, and the next read misses.
 
 These misses are the price of correctness. Reducing them means reducing writes to cached data, or storing data that changes less often, or accepting staleness through longer TTLs. This is the central tension explored in the whole Invalidation, TTL and consistency chapter: every invalidation you perform buys freshness at the cost of a future miss.
+
+```mermaid
+flowchart TD
+  M[Cache miss] --> Q1{First request ever for this key?}
+  Q1 -->|yes| C1["Compulsory: pre-warm or prefetch"]
+  Q1 -->|no| Q2{Dropped because of a write?}
+  Q2 -->|yes| C2["Coherence: update, longer TTL"]
+  Q2 -->|no| Q3{Space free elsewhere in the cache?}
+  Q3 -->|yes| C3["Conflict: rebalance, shared pool"]
+  Q3 -->|no| C4["Capacity: more memory, better policy"]
+```
 
 ### 6.5 Using the classification
 

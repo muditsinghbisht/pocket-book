@@ -20,3 +20,130 @@ questions:
     hints:
       - Follow the request from the user's device to the disk.
       - Which of these caches runs on the user's own device?
+
+  - id: layers-no-cache-01
+    level: beginner
+    type: mcq
+    q: What does Cache-Control no-cache tell a cache to do?
+    options:
+      - Never store the response
+      - Store it, but revalidate with the origin before each reuse
+      - Store it for one year
+      - Store it only in the browser
+    answer: 1
+    explain: >-
+      no-cache means check first, not do not cache. no-store is the directive
+      that forbids keeping a copy.
+
+  - id: layers-fingerprint-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A site serves app.3f9a1c.js and index.html, which references it. Which
+      pair of policies is best?
+    options:
+      - Both public, max-age one year
+      - app.3f9a1c.js no-store, index.html immutable
+      - app.3f9a1c.js public, max-age one year, immutable. index.html no-cache with an ETag
+      - Both no-cache
+    answer: 2
+    explain: >-
+      The hashed URL changes with content, so it can be cached for a year. The
+      HTML must be revalidated, or users stay on an old release that points
+      at old assets.
+
+  - id: layers-shield-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A CDN has an 85% edge hit ratio and a 60% shield hit ratio on edge
+      misses. The site receives 10,000 requests per second. How many reach the
+      origin per second?
+    answer: 600
+    tolerance: 0
+    explain: >-
+      Edge misses are 10,000 x 0.15 = 1,500. Shield misses are 1,500 x 0.40 =
+      600 per second.
+
+  - id: layers-four-layer-01
+    level: advanced
+    type: numeric
+    q: >-
+      Four layers have hit ratios, on the requests that reach them, of 25%,
+      60%, 50% and 90%. What percentage of requests reaches the origin?
+    answer: 1.5
+    tolerance: 0.01
+    unit: "%"
+    explain: >-
+      Multiply the miss ratios: 0.75 x 0.40 x 0.50 x 0.10 = 0.015, or 1.5%.
+
+  - id: layers-tlb-reach-01
+    level: advanced
+    type: numeric
+    q: >-
+      A TLB has 1,024 entries. What is its reach with 2 MB huge pages?
+    answer: 2
+    tolerance: 0
+    unit: GB
+    explain: >-
+      Reach is entries x page size = 1,024 x 2 MB = 2,048 MB, which is 2 GB.
+      With 4 KB pages the same TLB reaches only 4 MB.
+
+  - id: layers-group-commit-01
+    level: advanced
+    type: numeric
+    q: >-
+      Each fsync takes 0.5 ms. A database batches 25 transactions into each
+      flush. About how many commits per second can it sustain?
+    answer: 50000
+    tolerance: 0
+    unit: commits/s
+    explain: >-
+      One flush per 0.5 ms is 2,000 flushes per second. At 25 commits per
+      flush that is 50,000 commits per second, versus 2,000 without batching.
+
+  - id: layers-false-sharing-01
+    level: staff
+    type: mcq
+    q: >-
+      Two threads each update their own counter, adjacent fields of one
+      object. Throughput drops sharply compared with separate objects. Why?
+    options:
+      - The JVM serialises all field writes
+      - The fields share a cache line, so each write invalidates the other core's copy
+      - The counters are Shared in MESI, which blocks writes
+      - The L3 cache is too small to hold two longs
+    answer: 1
+    explain: >-
+      Coherence works on whole lines. Writes to different variables in the
+      same 64-byte line still force the line to bounce between cores. Padding
+      or alignment, or per-thread cells merged later, fix it.
+
+  - id: layers-sequential-miss-01
+    level: beginner
+    type: numeric
+    q: >-
+      A program reads an array of 4-byte integers sequentially with a 64-byte
+      cache line. What is the miss rate from compulsory misses?
+    answer: 6.25
+    tolerance: 0
+    unit: "%"
+    explain: >-
+      A line holds 16 integers. The first read misses and the next 15 hit, so
+      1 / 16 = 6.25%.
+
+  - id: layers-l1-invalidation-01
+    level: staff
+    type: free
+    q: >-
+      A service has a short-TTL in-process L1 in front of a shared Redis L2.
+      A writer updates the database and deletes the key in Redis. Why can
+      users still see the old value, and how do you bound it?
+    answer: >-
+      Deleting from the remote cache does not clear each instance's L1, so
+      instances keep serving the old value until their L1 TTL expires. Bound
+      it with a very short L1 TTL and, if needed, pub/sub invalidation
+      broadcasts. Messages can be lost, so the TTL stays as the safety net.
+    explain: >-
+      Every added layer is another place stale data can hide. The staleness
+      budget is set by the longest TTL on the path.

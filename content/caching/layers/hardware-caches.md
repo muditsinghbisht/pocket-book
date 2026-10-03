@@ -41,6 +41,8 @@ The figures below are **approximate orders of magnitude**, not measurements of a
 
 Notice the ratio. DRAM is roughly two orders of magnitude slower than L1. An SSD is another three orders slower than DRAM. When a later lesson says "a cache hit is 100 times cheaper than a miss", the number is not rhetorical: it is the same ratio that has repeated at every layer of the stack.
 
+> **Key idea:** Fast storage is small and large storage is slow. The same hundredfold gap repeats at every layer of the stack, which is why a hit is worth so much more than a miss.
+
 ```mermaid
 flowchart LR
   Core[Core registers] --> L1[L1 cache]
@@ -56,6 +58,21 @@ A CPU cache does not store individual bytes. It stores fixed-size blocks called 
 
 This is spatial locality made concrete. If you read `a[0]` from an array of 4-byte integers and it misses, the line also brings in `a[1]` through `a[15]`. The next fifteen reads are hits. Sequential access over an array therefore pays one miss per sixteen elements, while a pattern that touches one integer per line (a stride of 64 bytes or more) pays a miss on every access.
 
+```mermaid
+sequenceDiagram
+  participant Core
+  participant L1
+  participant L2
+  participant DRAM
+  Core->>L1: load a[0]
+  L1->>L2: miss
+  L2->>DRAM: miss
+  DRAM-->>L1: whole 64-byte line, a[0] to a[15]
+  L1-->>Core: a[0]
+  Core->>L1: load a[1]
+  L1-->>Core: hit, same line
+```
+
 ### Worked example: row-major versus column-major traversal
 
 Consider a 1024 by 1024 matrix of 4-byte integers stored in row-major order (as in C, C++ and Java's arrays of arrays within a row). One row is 1024 x 4 = 4096 bytes, which is 64 cache lines of 64 bytes.
@@ -68,6 +85,14 @@ Column-wise traversal reads `m[0][0]`, `m[1][0]`, `m[2][0]`, ... The stride is 4
 - Column-wise: 16 misses = 1600 ns per 16 accesses, 100 ns per access.
 
 That is roughly a 14x difference from reordering two loops, with no change in the amount of "work". In practice hardware prefetchers and memory-level parallelism narrow the gap, but the direction and the order of magnitude hold. Many real speedups from "loop interchange" and "blocking" (tiling) come entirely from this effect.
+
+```mermaid
+xychart-beta
+  title "Average ns per access, hit 1 ns, miss 100 ns"
+  x-axis ["Row-wise", "Column-wise"]
+  y-axis "ns per access" 0 --> 100
+  bar [7.2, 100]
+```
 
 ```java
 // Cache-friendly: inner loop walks consecutive memory
@@ -92,6 +117,12 @@ A cache has far fewer lines than memory has blocks, so we need a rule for which 
 
 **N-way set-associative.** The compromise used almost everywhere. The cache is divided into sets; each block maps to exactly one set, but may occupy any of the N ways within that set. An 8-way cache compares 8 tags in parallel. When a set is full, a **replacement policy** picks the victim, typically an approximation of LRU (pseudo-LRU using a few bits per set), because exact LRU for 8 or 16 ways is costly. This is the first place in the book where you meet eviction: the hardware solves exactly the problem that the Eviction chapter solves in software, with a tight bit budget.
 
+| Design                | Where a block may go     | Tags compared per lookup | Weakness                   |
+| --------------------- | ------------------------ | ------------------------ | -------------------------- |
+| Direct-mapped         | Exactly one slot         | 1                        | Conflict misses            |
+| N-way set-associative | Any of N ways in one set | N                        | Needs a replacement policy |
+| Fully associative     | Any slot                 | All of them              | Area and power cost        |
+
 ### Splitting an address: tag, index, offset
 
 Given a cache of capacity C bytes, line size B bytes and associativity N:
@@ -107,6 +138,14 @@ Given a cache of capacity C bytes, line size B bytes and associativity N:
 - Offset bits = log2(64) = 6. Index bits = log2(64) = 6. Tag bits = 48 - 6 - 6 = 36.
 
 For address `0x0000_1234_5678`, the low 6 bits select the byte in the line, the next 6 bits select one of 64 sets, and the remaining 36 bits are stored as the tag. Lookup: use the index to find the set, compare the 36-bit tag with the 8 stored tags in parallel, and on a match use the offset to pick the byte. A neat consequence: addresses that differ by a multiple of 64 x 64 = 4096 bytes land in the same set. A program that walks an array with a stride of exactly 4096 bytes uses only one set, so only 8 lines (the associativity) can be live at once, and the 32 KB cache behaves like a 512-byte one. This is the notorious **power-of-two stride** pathology.
+
+```mermaid
+flowchart LR
+  A["48-bit address"] --> T["Tag: 36 bits, stored and compared"]
+  A --> I["Index: 6 bits, picks 1 of 64 sets"]
+  A --> O["Offset: 6 bits, picks the byte"]
+  I --> W["Compare tags of the 8 ways"]
+```
 
 ### The three C's of misses
 
@@ -127,6 +166,23 @@ Caches must also handle stores. The same vocabulary we use later for distributed
 - **Write-allocate vs no-write-allocate**: on a store miss, do we first fetch the line into the cache (allocate) or send the store straight down? Write-back caches normally allocate; write-through caches often do not.
 
 The dirty bit is the seed of every durability and consistency issue discussed in the Write policies chapter: while a line is dirty, the cache holds the only up-to-date copy. If the "cache" is a CPU, a power loss simply loses the program's state anyway, so nobody minds. When the cache is Redis in front of a database, the same design suddenly raises the question "what if we crash before the flush?".
+
+| Policy        | On a store                    | Next-level traffic                  | Risk                            |
+| ------------- | ----------------------------- | ----------------------------------- | ------------------------------- |
+| Write-through | Update cache and next level   | Every store                         | Slow, but consistent            |
+| Write-back    | Update cache, mark line dirty | Only when the dirty line is evicted | Cache holds the only fresh copy |
+
+```mermaid
+sequenceDiagram
+  participant Core
+  participant L1
+  participant L2
+  Core->>L1: store x
+  Note over L1: line marked dirty, L2 is stale
+  Core->>L1: store x again
+  Note over L1: second store costs no traffic
+  L1->>L2: eviction writes the dirty line back
+```
 
 ## 5. Coherence: many cores, many copies
 
@@ -156,6 +212,20 @@ stateDiagram-v2
 
 Real processors use variants (MESIF, MOESI) and directory-based schemes at scale, but the insight is stable: the system maintains a **single-writer, multiple-reader** invariant per cache line, using invalidation to take away other cores' copies before a write is allowed to proceed. Hold that thought, because distributed caches face exactly the same problem across machines, and they pay far more for it.
 
+```mermaid
+sequenceDiagram
+  participant A as Core A
+  participant Bus
+  participant B as Core B
+  Note over A,B: both hold line x as Shared
+  A->>Bus: request ownership of x
+  Bus->>B: invalidate x
+  Note over B: Shared to Invalid
+  Note over A: Shared to Modified, A writes x
+  B->>Bus: read x
+  A-->>B: supply data, A downgrades to Shared
+```
+
 ### Worked example: a counter bouncing between cores
 
 Two threads each increment a shared counter 1 million times. Suppose each increment requires obtaining the line in M state and each ownership transfer costs about 50 ns (illustrative figure). If the threads alternate perfectly, there are up to 2 million ownership transfers, about 2,000,000 x 50 ns = 100 ms, even though an uncontended increment takes about 1 ns (2 ms total for the same work done by one thread). Contention converts a 1 ns operation into a 50 ns one, simply because the line must ping-pong.
@@ -172,6 +242,19 @@ class Counters {
 ```
 
 `a` and `b` are 8 bytes each and almost certainly share a line. Thread 1 writes `a`, taking the line to M and invalidating thread 2's copy. Thread 2 writes `b`, which requires taking the line back. The threads never touch each other's data, yet they fight over ownership. This is **false sharing**: no logical sharing, but physical sharing of a line. Throughput can drop by an order of magnitude compared with the same code using separate lines.
+
+```mermaid
+sequenceDiagram
+  participant T1 as Thread 1 core
+  participant Line as Line holding a and b
+  participant T2 as Thread 2 core
+  T1->>Line: write a, line becomes Modified here
+  T2->>Line: write b, needs ownership
+  Line-->>T1: invalidate
+  T1->>Line: write a again, needs ownership
+  Line-->>T2: invalidate
+  Note over T1,T2: the line ping-pongs although no data is shared
+```
 
 The cure is to separate the hot fields onto different lines, by **padding** or alignment:
 
@@ -203,6 +286,16 @@ Before leaving silicon, extract the lessons that transfer upward:
 2. **Hit ratio is not enough; cost per miss is the metric.** Average access time = hit time + miss rate x miss penalty. With hit time 1 ns, miss penalty 100 ns: a 99 percent hit rate gives 1 + 0.01 x 100 = 2 ns; 95 percent gives 1 + 0.05 x 100 = 6 ns. Going from 99 to 95 percent triples average latency. Small drops in hit rate are expensive when the miss penalty is large.
 3. **Replacement is a policy choice with limited information.** Hardware approximates LRU; software can do better when it has more memory per entry.
 4. **Keeping copies consistent costs something.** Coherence traffic is the price of having several copies, and it grows with the number of writers.
+
+```mermaid
+xychart-beta
+  title "Average access time, hit 1 ns, miss penalty 100 ns"
+  x-axis ["99% hits", "95% hits", "90% hits"]
+  y-axis "ns" 0 --> 12
+  bar [2, 6, 11]
+```
+
+> **Key idea:** When the miss penalty is large, small drops in hit rate are expensive. Going from 99 to 95 percent triples the average latency.
 
 ## Common pitfalls
 

@@ -82,6 +82,14 @@ An **out-of-process cache** (Redis, Memcached and similar, covered later in the 
 - **Operational cost**: another system to run, monitor, secure and size.
 - **Hot keys**: one node may become a bottleneck for a very popular key.
 
+|                    | In-process cache                             | Out-of-process cache               |
+| ------------------ | -------------------------------------------- | ---------------------------------- |
+| Latency            | Tens to hundreds of ns                       | A few hundred microseconds to 1 ms |
+| Capacity           | One instance's heap, duplicated per instance | Many GB or TB, shared              |
+| Consistency        | Instances can disagree                       | One logical copy per key           |
+| After a deploy     | Cold                                         | Stays warm                         |
+| Extra failure mode | None                                         | Cache down, slow or partitioned    |
+
 ### Worked example: when is the network hop worth it?
 
 Suppose a database query takes 5 ms and a remote cache lookup takes 0.5 ms. With hit ratio h, expected latency is:
@@ -89,6 +97,15 @@ Suppose a database query takes 5 ms and a remote cache lookup takes 0.5 ms. With
 T = 0.5 + (1 - h) x 5 (the lookup is always paid; misses also pay the database).
 
 For h = 0.9, T = 0.5 + 0.5 = 1.0 ms (5x faster). For h = 0.5, T = 0.5 + 2.5 = 3.0 ms. For h = 0.1, T = 0.5 + 4.5 = 5.0 ms, no better than not caching at all, and it still adds load on the cache and complexity. The break-even is where 0.5 + (1 - h) x 5 = 5, giving h = 0.1. Below a 10 percent hit ratio, this cache is a net loss for latency. The cache is also valuable for protecting the database even when latency gains are small, but that is a throughput argument, not a latency one, and should be measured separately.
+
+```mermaid
+xychart-beta
+  title "Expected latency (ms), cache 0.5 ms, database 5 ms"
+  x-axis ["10%", "50%", "90%"]
+  y-axis "ms" 0 --> 6
+  line [5.0, 3.0, 1.0]
+  line [5, 5, 5]
+```
 
 ## 4. Two-level caches: local plus remote
 
@@ -106,6 +123,23 @@ flowchart LR
 
 Advantages: the hottest keys are served in nanoseconds; the remote cache is shielded from the highest request rate (this is a standard mitigation for hot keys); the database is protected by two filters. Costs: invalidation now has two levels. If you delete a key from the remote cache, every instance's L1 may still hold a stale copy until its TTL expires. Common solutions: keep L1 TTL very short (a few seconds), or publish invalidation messages to all instances via pub/sub, accepting that messages can be lost, so TTL remains the safety net. The Consistency lessons treat this in detail.
 
+```mermaid
+sequenceDiagram
+  participant W as Writer
+  participant DB
+  participant L2 as Remote cache
+  participant A as Instance A with L1
+  W->>DB: update price
+  W->>L2: delete key
+  A->>A: read key, L1 still holds the old price
+  Note over A: stale until the L1 TTL expires
+  A->>L2: after TTL, miss
+  L2->>DB: reload
+  DB-->>A: new price
+```
+
+> **Key idea:** Deleting from the remote cache does not clear each instance's L1. Keep L1 TTLs short or broadcast invalidations, and keep the TTL as the safety net.
+
 ## 5. Database caches
 
 Databases are themselves heavily cached systems.
@@ -113,6 +147,18 @@ Databases are themselves heavily cached systems.
 ### The buffer pool
 
 Relational databases organize data in fixed-size **pages** (commonly 4 to 16 KB, for example 8 KB in PostgreSQL's default and 16 KB in InnoDB's). A **buffer pool** (PostgreSQL calls it shared buffers) is a region of memory holding recently used pages. When a query needs a page, the engine looks it up in the pool via a hash table; a hit avoids a disk read, a miss reads the page and may evict another. Dirty pages are written back lazily, under the **write-ahead log** discipline: the log record describing a change must be durable before the modified page is written. A **checkpoint** periodically flushes dirty pages so that recovery need only replay the log from the checkpoint. This is a textbook write-back cache with a durability protocol layered on top.
+
+```mermaid
+sequenceDiagram
+  participant Txn
+  participant Pool as Buffer pool
+  participant WAL as Write-ahead log
+  participant Disk as Data files
+  Txn->>Pool: change a page, now dirty
+  Txn->>WAL: log record made durable first
+  Note over Pool,Disk: later, at a checkpoint
+  Pool->>Disk: write dirty pages
+```
 
 Replacement in buffer pools is typically an LRU variant with scan resistance: InnoDB splits its LRU list into "young" and "old" sublists so a full table scan does not flush the working set; PostgreSQL uses a clock-sweep algorithm with usage counts. These are the policies discussed in the Eviction chapter, running at page granularity.
 
@@ -150,6 +196,16 @@ class Fib {
 
 Naive recursive `fib(n)` makes on the order of 1.6^n calls (it grows like the golden ratio to the n); with memoization, each of the n subproblems is computed once: O(n). For n = 40, that is about 3 x 10^8 calls (roughly 331 million) versus 40 computations. This is dynamic programming described as a cache.
 
+```mermaid
+flowchart TD
+  F4["fib 4"] --> F3["fib 3"]
+  F4 --> M2["fib 2: memo hit"]
+  F3 --> F2["fib 2: computed"]
+  F3 --> B1["fib 1: base case"]
+  F2 --> B1b["fib 1: base case"]
+  F2 --> B0["fib 0: base case"]
+```
+
 In UI frameworks, memoization appears as `useMemo`, `React.memo`, selectors that recompute only when inputs change, and query caches such as those in data-fetching libraries that deduplicate requests and keep results fresh with a stale-while-revalidate strategy. Considerations:
 
 - **Bound the memo table**, or it leaks memory. Use LRU or a weak-reference map.
@@ -173,6 +229,14 @@ A product page request. Hit ratios for requests reaching each layer: browser cac
 - Remote cache serves 90 percent of 84,000 = 75,600. Remaining: 8,400 reach the database.
 
 Overall miss product: 0.7 x 0.2 x 0.6 x 0.1 = 0.0084, i.e. 0.84 percent of requests reach the database, an overall 119x reduction. Notice that each layer's hit ratio looks modest or ordinary, yet the combination is dramatic.
+
+```mermaid
+xychart-beta
+  title "Requests remaining after each layer (thousands)"
+  x-axis ["Start", "Browser", "CDN", "App L1", "Remote"]
+  y-axis "Requests (thousands)" 0 --> 1000
+  bar [1000, 700, 140, 84, 8.4]
+```
 
 Expected latency with illustrative costs: browser hit 1 ms, CDN hit 30 ms (includes network), app L1 hit 40 ms (CDN miss to origin) plus 0.001 ms, remote hit 41 ms, database 55 ms. The point is not the exact numbers, but that layers closer to the user save the most per hit, and that costs add along the path: a miss at every layer pays the sum of lookup costs plus the origin cost. A layer with a low hit ratio and non-trivial lookup cost makes the average worse, as the break-even calculation in section 3 showed.
 
@@ -201,6 +265,17 @@ When to stop adding layers: each layer adds latency on a miss, complexity, and a
 ## 8. Invalidation across layers
 
 Every added layer multiplies the places stale data can hide. A single update to a product's price may need to reach the database (the source of truth), the remote cache (delete or update the key), each instance's L1 (TTL or broadcast), the CDN (purge by tag) and every browser (wait out the TTL or use versioned URLs). The practical design questions are:
+
+```mermaid
+flowchart TD
+  U["Price update"] --> D["Database: source of truth"]
+  U --> R["Remote cache: delete key"]
+  U --> L["Each L1: TTL or broadcast"]
+  U --> C["CDN: purge by tag"]
+  U --> B["Browsers: wait out TTL or use versioned URLs"]
+```
+
+> **Key idea:** Every added layer is another place stale data can hide. Decide the staleness budget per data type and keep TTLs as the safety net.
 
 1. What is the maximum staleness the business accepts, per data type? Prices might tolerate seconds; inventory counts for checkout might tolerate none.
 2. Who initiates invalidation, and is delivery reliable? Event-based invalidation can be lost; TTLs are the safety net.

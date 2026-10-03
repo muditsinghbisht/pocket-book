@@ -77,3 +77,191 @@ questions:
     hints:
       - The same data is read again, a short time later.
       - Is the reuse about time or about neighbouring addresses?
+
+  - id: fundamentals-byte-hit-ratio-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A CDN edge serves 1,000 requests. 800 are hits on 10 KB files. 200 are
+      misses on 2,000 KB files. What is the byte hit ratio?
+    answer: 1.96
+    tolerance: 0.05
+    unit: "%"
+    explain: >-
+      Bytes from the cache are 800 x 10 = 8,000 KB. Bytes from origin are
+      200 x 2,000 = 400,000 KB. Total 408,000 KB, so 8,000 / 408,000 = 1.96%.
+      The request hit ratio is 80%, which hides this.
+
+  - id: fundamentals-two-level-amat-01
+    level: advanced
+    type: numeric
+    q: >-
+      An in-process L1 has a 0.01 ms lookup and a 50% hit ratio. A remote L2
+      has a 1 ms lookup and an 80% local hit ratio on the requests that reach
+      it. The database takes 25 ms. What is the AMAT in ms?
+    answer: 3.01
+    tolerance: 0.01
+    unit: ms
+    explain: >-
+      Inner = 1 + 0.2 x 25 = 6 ms. AMAT = 0.01 + 0.5 x 6 = 3.01 ms. Only
+      0.5 x 0.2 = 10% of requests reach the database.
+
+  - id: fundamentals-miss-diagnosis-01
+    level: intermediate
+    type: mcq
+    q: >-
+      Replaying a trace through a simulated cache of double the size raises
+      the hit ratio from 70% to 90%. What kind of misses dominated?
+    options:
+      - Compulsory misses
+      - Capacity misses
+      - Coherence misses
+      - Conflict misses
+    answer: 1
+    explain: >-
+      Misses that vanish when the cache is larger are capacity misses.
+      Compulsory and coherence misses would barely move, because more memory
+      does not help a first access or an invalidated entry.
+
+  - id: fundamentals-miss-sensitivity-01
+    level: advanced
+    type: mcq
+    q: >-
+      A service handles 20,000 requests per second and its hit ratio falls from
+      98% to 96%. The dashboard barely moves. What happens to database load?
+    options:
+      - It rises by 2%
+      - It rises by 20%
+      - It rises by about 50%
+      - It doubles, from 400 to 800 queries per second
+    answer: 3
+    explain: >-
+      Database load is request rate x miss ratio. At 98% that is 20,000 x 0.02
+      = 400 per second. At 96% it is 20,000 x 0.04 = 800 per second. A small
+      change in hit ratio is a large relative change in miss traffic.
+
+  - id: fundamentals-hit-ratio-dashboard-01
+    level: staff
+    type: free
+    q: >-
+      An on-call engineer says "hit ratio dipped from 99% to 98%, that is
+      noise". Explain why this may be serious and what you would monitor
+      instead.
+    answer: >-
+      Backend load is request rate times miss ratio, so 99% to 98% doubles the
+      misses reaching the database. If the database was provisioned assuming a
+      very low miss ratio it may have little headroom. Monitor the miss ratio
+      and backend load (queries per second, utilisation), alert on relative
+      changes, and use a sliding window rather than a lifetime average.
+    explain: >-
+      The hit ratio hides the quantity the backend actually feels. Queues also
+      grow sharply near saturation, so a small rise in miss traffic can turn
+      into a large rise in latency.
+
+  - id: fundamentals-amdahl-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A request takes 150 ms, of which 90 ms is a data fetch. A cache cuts the
+      fetch to 10 ms. What is the overall speedup?
+    answer: 2.14
+    tolerance: 0.01
+    unit: x
+    explain: >-
+      New time = (150 - 90) + 10 = 70 ms, so 150 / 70 = 2.14. The ceiling is
+      150 / 60 = 2.5, because 60 ms is never touched by the cache.
+
+  - id: fundamentals-little-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A service handles 4,000 requests per second with a 95% hit ratio. Each
+      database query takes 30 ms. On average, how many queries are in flight
+      at the database?
+    answer: 6
+    tolerance: 0
+    explain: >-
+      The database sees only the misses, 4,000 x 0.05 = 200 per second. By
+      Little's law L = 200 x 0.030 = 6.
+
+  - id: fundamentals-lru-loop-01
+    level: advanced
+    type: mcq
+    q: >-
+      A job loops over the same 500 keys in order, forever, through an LRU
+      cache that holds 499 keys. What is the steady-state hit ratio?
+    options:
+      - About 99.8%
+      - About 50%
+      - 0%
+      - It depends on the TTL
+    answer: 2
+    explain: >-
+      Each key is evicted just before it is needed again, so every request
+      misses. With capacity 500 the whole loop fits and the hit ratio jumps
+      to 100%. LRU is the wrong policy for cyclic scans.
+
+  - id: fundamentals-uniform-01
+    level: beginner
+    type: mcq
+    q: >-
+      Requests are spread uniformly over all items, and the cache can hold 10%
+      of them. What is the best possible hit ratio?
+    options:
+      - 90%
+      - 10%
+      - 50%
+      - 100%
+    answer: 1
+    explain: >-
+      With no popularity skew every item is equally likely, so a cache holding
+      a tenth of the items hits about a tenth of the time. Skew is what makes
+      small caches effective.
+
+  - id: fundamentals-write-ratio-01
+    level: intermediate
+    type: numeric
+    q: >-
+      A key is read 30 times per second and written 12 times per second, and
+      every write invalidates the entry. What is the best-case hit ratio?
+    answer: 60
+    tolerance: 0
+    unit: "%"
+    explain: >-
+      The best case is 1 - w / r = 1 - 12 / 30 = 0.6. Each write causes at
+      most one miss, on the next read.
+
+  - id: fundamentals-cold-cache-01
+    level: staff
+    type: mcq
+    q: >-
+      A service takes 12,000 requests per second. A 96% hit ratio keeps the
+      database at 480 queries per second, and it can serve 1,000. The cache
+      cluster restarts. What is the most likely outcome?
+    options:
+      - The database sees about 12,000 queries per second, 12 times its capacity, and retries keep the cache cold
+      - Latency rises slightly and recovers in seconds
+      - The database is unaffected because it still serves its normal load
+      - The service fails over to a bigger database automatically
+    answer: 0
+    explain: >-
+      With an empty cache every request misses, so the database faces the full
+      12,000 per second. Timeouts and retries make it worse and stop the
+      cache from refilling, a metastable failure. The healthy-state load of
+      480 per second proves nothing about surviving this.
+
+  - id: fundamentals-display-vs-decide-01
+    level: beginner
+    type: mcq
+    q: >-
+      A product page shows "3 in stock" from a cache. Where should the
+      checkout read the stock count?
+    options:
+      - From the same cache, for consistency with the page
+      - From the CDN
+      - From the browser
+      - From the source of truth, with an atomic decrement
+    answer: 3
+    explain: >-
+      Cache for display, read the source of truth for decisions. A stale
+      count is fine on a page but not when approving a purchase.

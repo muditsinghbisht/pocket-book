@@ -27,6 +27,19 @@ The previous chapter, Locality, hit ratio and average access time, gave us the f
 
 This chapter provides four tools to answer them: Amdahl's law, Little's law, the working set model and the Zipf distribution. Each is a few lines of arithmetic, and together they let you do a credible capacity plan on a whiteboard.
 
+```mermaid
+mindmap
+  root((Capacity toolkit))
+    Amdahl
+      Ceiling on the speedup
+    Little
+      Concurrency and pool sizes
+    Working set
+      Where the knee is
+    Zipf
+      Best possible hit ratio
+```
+
 ## 2. Amdahl's law applied to caching
 
 Gene Amdahl observed in 1967 that the overall speedup from improving one part of a system is limited by the fraction of time that part accounts for. In its general form: if a fraction p of the total time is accelerated by a factor s, then
@@ -61,7 +74,37 @@ speedup = 1 / ( 0.2 + 0.8 / 8.89 )
 
 You can verify directly: new total = 9 + 20 = 29 ms, and 100 / 29 = 3.45. The cache accelerated the data fetch almost ninefold, yet the page only became 3.45 times faster, because 20 percent of the work was untouched.
 
+```mermaid
+pie title Before the cache, 100 ms per request
+  "Database fetch" : 80
+  "Everything else" : 20
+```
+
+```mermaid
+pie title After the cache at 90 percent hits, 29 ms per request
+  "Cache plus misses" : 9
+  "Everything else" : 20
+```
+
 The ceiling is 1 / 0.2 = 5. With a perfect cache that responded instantly to every request, the page would still take 20 ms. Pushing the hit ratio from 90 to 99 percent (fetch = 1 + 0.01 × 80 = 1.8 ms) gives a total of 21.8 ms and a speedup of 4.59. Going from 90 to 99 percent bought a further 7.2 ms, but a lot of engineering effort. The residual 20 ms is now where the time goes, and a cache cannot help with it.
+
+```mermaid
+xychart-beta
+  title "Page speedup by hit ratio, ceiling is 5x"
+  x-axis ["50%", "90%", "95%", "99%"]
+  y-axis "Speedup" 0 --> 5
+  line [1.64, 3.45, 4.0, 4.59]
+```
+
+| Share of time p that the cache touches | Maximum speedup 1 / (1 - p) |
+| -------------------------------------- | --------------------------- |
+| 10 %                                   | 1.11x                       |
+| 50 %                                   | 2x                          |
+| 75 %                                   | 4x                          |
+| 80 %                                   | 5x                          |
+| 90 %                                   | 10x                         |
+
+> **Key idea:** The part of the request you do not accelerate sets the ceiling. Profile before you cache.
 
 ### 2.2 What Amdahl's law tells a designer
 
@@ -107,11 +150,29 @@ L_db = 200 * 0.020 = 4 concurrent queries
 
 The cache cut database concurrency tenfold, from 40 to 4. This tells you how large the database connection pool needs to be, and shows you what happens when the hit ratio falls: at h = 0.5, lambda_db = 1,000, and L_db = 1000 × 0.020 = 20. If the pool holds 10 connections, requests queue.
 
+```mermaid
+flowchart LR
+  R["2,000 requests per s"] --> C{"Cache, 90 percent hits"}
+  C -->|"1,800 per s hit"| H["Served in the cache layer"]
+  C -->|"200 per s miss"| D[("Database, 20 ms each")]
+  D --> L["L = 200 x 0.020 = 4 queries in flight"]
+```
+
 ### 3.3 Queues explode near saturation
 
 Little's law gives averages. To understand why caches fail dramatically, add the following well-known intuition from queueing theory. For a simple single-server queue with random arrivals, the average wait grows roughly like 1 / (1 − rho), where rho = lambda × service time / servers is the **utilisation**. At rho = 0.5 the factor is 2; at rho = 0.9, 10; at rho = 0.99, 100. The system looks healthy until it suddenly does not.
 
 This is the mathematical basis of a cache-induced outage. Say the database has capacity for 1,000 queries per second at rho = 1. At a hit ratio of 95 percent and 10,000 requests per second, the miss traffic is 500 per second, rho = 0.5 and latency is near the minimum. If the hit ratio slips to 90 percent, miss traffic is 1,000 per second, rho = 1, and the queue grows without bound. A five-point drop in hit ratio moved the database from comfortable to collapsed.
+
+```mermaid
+xychart-beta
+  title "Relative wait time 1 / (1 - utilisation)"
+  x-axis ["0.5", "0.8", "0.9", "0.95", "0.99"]
+  y-axis "Wait factor" 0 --> 100
+  line [2, 5, 10, 20, 100]
+```
+
+> **Key idea:** Queues look fine until utilisation nears 1, then latency explodes. A small fall in hit ratio can push a database across that edge.
 
 ### 3.4 Little's law for the cache itself
 
@@ -122,6 +183,12 @@ L = 500 * 1800 = 900,000 sessions resident
 ```
 
 At 2 KB per session that is about 1.8 GB. This calculation sizes caches whose capacity is governed by expiry rather than by eviction pressure.
+
+```mermaid
+flowchart LR
+  A["500 inserts per s"] -->|"x 1,800 s lifetime"| B["900,000 sessions resident"]
+  B -->|"x 2 KB each"| C["about 1.8 GB"]
+```
 
 ## 4. The working set
 
@@ -138,6 +205,16 @@ Suppose a loop cycles through 1,000 distinct items in order, repeatedly, and the
 This is the extreme case of the cliff. Real workloads are smoother, but they do exhibit regions where a small shrink in cache size causes a large fall in hit ratio. A cache sitting just above a knee has very little margin. A traffic shift that enlarges the working set by 10 percent can push the system over the edge. This is the capacity version of the non-linear sensitivity we saw in the previous chapter, and it motivates **headroom**: provision above the knee, not at it.
 
 The looping pattern also shows that LRU is not universally optimal; scan-resistant policies exist for exactly this case, and are covered in the Eviction chapter.
+
+```mermaid
+xychart-beta
+  title "LRU hit ratio on a loop over 1,000 items"
+  x-axis ["500", "900", "999", "1000", "1100"]
+  y-axis "Hit ratio (%)" 0 --> 100
+  line [0, 0, 0, 100, 100]
+```
+
+> **Key idea:** Hit ratio versus cache size has a knee. One slot below the working set can mean every request misses, so provision above the knee, not at it.
 
 ### 4.3 Estimating the working set
 
@@ -177,6 +254,14 @@ H(N)       = ln(1,000,000) + 0.5772 = 13.8155 + 0.5772 = 14.3927
 | top 10 percent  | 100,000 | 11.5129 + 0.5772 = 12.0901                  | 84.0 %                  |
 | top 50 percent  | 500,000 | 13.1224 + 0.5772 = 13.6996                  | 95.2 %                  |
 
+```mermaid
+xychart-beta
+  title "Best-case hit ratio under Zipf, s = 1, N = 1,000,000"
+  x-axis ["0.1%", "1%", "2%", "10%", "50%"]
+  y-axis "Hit ratio (%)" 0 --> 100
+  bar [52.0, 68.0, 72.8, 84.0, 95.2]
+```
+
 Look at what this says. Caching a mere 0.1 percent of the items captures roughly half of all requests. That is why caching is so effective in practice: skew means a tiny cache goes a long way. But also look at the cost of improving: doubling the cache from 1 percent to 2 percent of items buys only 4.8 points (68.0 to 72.8). Raising the hit ratio from 84 to 95 percent requires five times as much memory (10 to 50 percent of the items). **Each additional gigabyte buys less than the last.** Here we have the economics behind the diminishing returns that we noticed in AMAT.
 
 For a flatter distribution (smaller s), skew is weaker, the curve is more linear, and caches need to be much larger to achieve the same hit ratio. In the limit of a uniform distribution (s = 0), the best-case hit ratio is simply C / N: a cache holding 10 percent of the items gets a 10 percent hit ratio, and the cache is nearly worthless. This is why per-user or per-session data with little re-reading is a weak caching candidate and why the question "how skewed is my access pattern?" belongs at the start of every design.
@@ -184,6 +269,12 @@ For a flatter distribution (smaller s), skew is weaker, the curve is more linear
 ### 5.3 The long tail problem
 
 Zipf distributions have **long tails**: a vast number of items, each requested rarely. In the example, the bottom 50 percent of the items (500,000 of them) together receive only 4.8 percent of the requests. Yet every one of those requests is a miss, and each is likely to be a compulsory or capacity miss. If your miss penalty is large, the tail may dominate backend load even though it is a small percentage of traffic. This suggests designing the _backend_ to handle the tail cheaply (good indexes, read replicas) because the cache will never absorb it.
+
+```mermaid
+pie title Share of requests by item popularity, N = 1,000,000
+  "Top 50 percent of items" : 95.2
+  "Bottom 50 percent of items" : 4.8
+```
 
 Real caches also suffer from one-hit wonders: items requested exactly once. Inserting them into the cache wastes space and pushes out useful items. Some systems use admission policies (such as a small frequency filter in front of the main cache) to refuse items until they have been seen twice. We discuss these in the Eviction chapter.
 
@@ -232,6 +323,23 @@ flowchart TD
   D --> E[Multiply by bytes per item plus overhead]
   E --> F[Add headroom and replicas]
   F --> G[Check node loss and cold start]
+```
+
+| Step | Question                                          | Result in the catalogue example |
+| ---- | ------------------------------------------------- | ------------------------------- |
+| 1    | Hit ratio needed for 1,000 database queries per s | 96.7 %                          |
+| 2    | Items to cache under Zipf s = 1                   | about 11.2 million (56 %)       |
+| 3    | Raw data at 1.2 KB each                           | 13.4 GB                         |
+| 4    | With key overhead and fragmentation               | 17.5 GB                         |
+| 5    | With 25 % headroom                                | 23.3 GB                         |
+| 6    | Nodes of 16 GB usable                             | 2 primaries, plus replicas      |
+
+```mermaid
+flowchart LR
+  N["One of two nodes dies"] --> K["Half the keys are gone"]
+  K --> H["Hit ratio about 80 percent"]
+  H --> M["Misses: 30,000 x 0.2 = 6,000 per s"]
+  M --> X["Database limit is 2,000 per s"]
 ```
 
 ## 7. Code: a tiny trace simulator

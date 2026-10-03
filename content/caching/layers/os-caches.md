@@ -25,6 +25,13 @@ Between your program and the physical hardware sits the operating system, and it
 
 They differ in scale (the TLB holds tens to thousands of entries; the page cache can occupy most of main memory) and in purpose (one avoids repeated address arithmetic through memory-resident tables, the other avoids slow storage I/O), but they obey the same logic as the CPU caches of the previous lesson: locality, a bounded capacity, a replacement policy, and a write policy. Latency figures below are, as before, approximate orders of magnitude.
 
+|              | TLB                                   | Page cache                     |
+| ------------ | ------------------------------------- | ------------------------------ |
+| Caches       | Virtual to physical translations      | Recently used file blocks      |
+| Size         | Tens to thousands of entries          | Can occupy most of main memory |
+| A miss costs | A page walk of up to four table reads | A disk read                    |
+| Changes      | TLB shootdown on other cores          | Dirty pages written back later |
+
 ## 2. Virtual memory in two minutes
 
 Each process sees its own **virtual address space**. The OS and the memory management unit (MMU) map **virtual pages** (commonly 4 KB) onto **physical frames** in RAM. This indirection gives isolation, lazy allocation, memory-mapped files and the illusion of more memory than physically exists (by paging to disk).
@@ -32,6 +39,15 @@ Each process sees its own **virtual address space**. The OS and the memory manag
 The mapping is stored in **page tables**, a tree-shaped structure in main memory. On a 64-bit x86 processor with 4 KB pages, a common configuration uses a four-level tree: translating one address means reading up to four table entries, one per level, each a memory access. A **page walk** can therefore cost several memory accesses. If each costs about 100 ns when it misses all CPU caches (the walker's reads usually hit in the data caches, so typical cost is lower), the worst case is 400 ns before the real data access even starts.
 
 That would be catastrophic, since _every_ load and store needs a translation. The hardware answer is the TLB.
+
+```mermaid
+flowchart TD
+  VA["Virtual address"] --> T1["Read table level 1"]
+  T1 --> T2["Read table level 2"]
+  T2 --> T3["Read table level 3"]
+  T3 --> T4["Read table level 4"]
+  T4 --> F["Physical frame, now the real access"]
+```
 
 ### The TLB
 
@@ -58,9 +74,24 @@ Suppose a TLB hit adds about 1 ns, a miss adds a page walk of about 30 ns (assum
 
 With a 95 percent hit rate it becomes 0.95 x 1 + 0.05 x 31 = 0.95 + 1.55 = 2.5 ns, more than double, even though both hit rates look "excellent". The same lesson as before: with a large miss penalty, the last few percent of hit rate matter.
 
+```mermaid
+xychart-beta
+  title "Average translation overhead (ns)"
+  x-axis ["99.5% TLB hits", "95% TLB hits"]
+  y-axis "ns" 0 --> 3
+  bar [1.15, 2.5]
+```
+
 ### TLB reach and huge pages
 
 **TLB reach** is the amount of memory the TLB can map at once: entries x page size. A 1,536-entry L2 TLB (an illustrative size) with 4 KB pages reaches 1536 x 4 KB = 6 MB. A program with a 2 GB working set accessed randomly will have a TLB miss on most accesses. If we instead use 2 MB **huge pages**, the same 1,536 entries reach 1536 x 2 MB = 3 GB. Databases, JVM heaps with large working sets and in-memory caches such as Redis or Memcached can all benefit from huge pages, through transparent huge pages or explicit configuration, but with tradeoffs: internal fragmentation, latency spikes from compaction in some configurations, and larger copy-on-write costs when forking. Some vendors recommend disabling transparent huge pages for specific databases for exactly these reasons; always follow the documentation for the software you run and measure.
+
+| Page size       | Entries | Reach |
+| --------------- | ------- | ----- |
+| 4 KB            | 1,536   | 6 MB  |
+| 2 MB huge pages | 1,536   | 3 GB  |
+
+> **Key idea:** Reach is entries times page size. A random-access working set far larger than the reach misses the TLB on most accesses, and huge pages stretch the reach.
 
 ### Context switches and coherence of translations
 
@@ -72,7 +103,26 @@ A TLB entry is only valid for one address space. On a context switch the OS eith
 
 Disks and SSDs are orders of magnitude slower than RAM: roughly tens of microseconds for a fast NVMe read, and several milliseconds for a rotating disk seek, against around 100 ns for DRAM. When a process calls `read()` on a file, the kernel first looks for the requested pages in the page cache. If present (a **hit**), it copies the data to the user buffer from RAM. If absent (a **miss**), the kernel issues a disk read, installs the page in the cache and then copies it out.
 
+```mermaid
+sequenceDiagram
+  participant App
+  participant Kernel
+  participant PC as Page cache
+  participant Disk
+  App->>Kernel: read file page
+  Kernel->>PC: look up page
+  alt hit
+    PC-->>App: copy from RAM
+  else miss
+    Kernel->>Disk: read page
+    Disk-->>PC: install page
+    PC-->>App: copy from RAM
+  end
+```
+
 On Linux, almost all file I/O flows through the page cache, and it is sized dynamically: it uses essentially all memory that applications do not need and gives it back under pressure. This is why a freshly booted server shows lots of "free" memory and a long-running one shows very little: the memory is not wasted, it is serving as cache. Operators learn to read "available" memory (free plus reclaimable cache) rather than "free".
+
+> **Key idea:** Low "free" memory on a healthy Linux server is normal because the page cache uses what applications do not. Watch available memory, swap and major faults instead.
 
 ### Read-ahead
 
@@ -81,6 +131,16 @@ Sequential access is common, so the kernel detects it and **reads ahead**: when 
 ### Writes: write-back with dirty pages
 
 By default, `write()` copies the data into the page cache, marks the page **dirty** and returns immediately. Background kernel threads later **write back** dirty pages to disk, triggered by age (typically tens of seconds) or by the fraction of memory that is dirty crossing a threshold. This is a **write-back** policy, exactly as in CPU caches, with the same benefits (fast writes, coalescing of repeated writes to the same page, batching) and the same risk: if the machine loses power or the kernel crashes before writeback, the data the application believed it had written is lost.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Clean: page read from disk
+  Clean --> Dirty: write
+  Dirty --> Dirty: more writes coalesce
+  Dirty --> Writeback: age or dirty threshold
+  Writeback --> Clean: device acknowledges
+  Clean --> [*]: evicted
+```
 
 Applications that need durability must ask explicitly:
 
@@ -103,6 +163,14 @@ The cost of `fsync` is visible: on an SSD without power-loss protection it may t
 
 Suppose each `fsync` takes 1 ms. Committing each transaction individually yields at most 1 / 0.001 = 1,000 commits per second. With group commit, the log writer collects all transactions that arrive while the previous flush is in progress. If 50 transactions arrive per millisecond window, one fsync commits 50 of them: throughput becomes about 50,000 commits per second, while each transaction's latency is bounded by roughly the wait for the current flush plus its own flush (about 1 to 2 ms). Batching trades a small, bounded delay for large gains in throughput.
 
+```mermaid
+xychart-beta
+  title "Commits per second with a 1 ms fsync"
+  x-axis ["One fsync per commit", "Group commit of 50"]
+  y-axis "Commits per second" 0 --> 55000
+  bar [1000, 50000]
+```
+
 ### Replacement in the page cache
 
 The kernel must evict pages when memory is needed. A pure LRU would be vulnerable to a scan: reading one huge file once (a backup, a `grep -r`, `cat bigfile > /dev/null`) would flush the entire useful cache. So Linux and other kernels use LRU-like schemes with multiple lists (active and inactive lists, with a promotion on second access), designed to give **scan resistance**. The newer Linux multi-generational LRU work is another refinement along similar lines. The details change between kernel versions, so treat this as a conceptual description; the eviction chapter covers the underlying ideas (2Q, CLOCK, and others) in depth.
@@ -114,6 +182,12 @@ Applications have three broad ways to deal with the page cache.
 1. **Buffered I/O (the default).** `read`/`write` through the page cache. The simplest option; the OS handles caching, read-ahead and writeback. Data may be copied twice: disk to page cache, page cache to user buffer.
 2. **Memory-mapped files (`mmap`).** The file's pages are mapped directly into the process's address space; a load that touches an unmapped page triggers a page fault, and the kernel brings the page from the page cache (or disk). It avoids the copy and makes the file look like memory, but you give up control over eviction and I/O timing: a page fault can stall a thread unpredictably, and errors (such as I/O failures) surface as signals rather than return codes. Several database authors have documented reasons for avoiding `mmap` for core storage engines, and others use it successfully for read-mostly data; the right answer depends on workload.
 3. **Direct I/O (`O_DIRECT`).** Bypasses the page cache; the application manages its own cache. Databases such as those with a **buffer pool** (covered in the application and database caches lesson) frequently do this to avoid **double caching**: holding the same page in both the database buffer pool and the OS page cache, wasting memory and adding copies.
+
+| Approach     | Copies of the data                 | Who decides eviction | Main risk                         |
+| ------------ | ---------------------------------- | -------------------- | --------------------------------- |
+| Buffered I/O | Disk to page cache to user buffer  | Kernel               | Double caching with a buffer pool |
+| mmap         | Page cache mapped into the process | Kernel               | Unpredictable page-fault stalls   |
+| O_DIRECT     | Application buffer only            | The application      | App must build its own cache      |
 
 The decision framework is: who is better placed to know which pages are hot and when to evict or flush them? The database knows its query plans and log ordering rules (it must write the log before the data page it describes), the OS does not. Conversely, an ordinary application that reads configuration files has no need to reinvent a cache, and the OS provides one for free.
 
@@ -138,6 +212,14 @@ sequenceDiagram
   PC->>Disk: write dirty pages
   Disk-->>PC: ack (if device honours flush)
   PC-->>App: fsync returns
+```
+
+```mermaid
+timeline
+  title Life of one write
+  Application : write returns : data only in the page cache
+  Kernel : page marked dirty : background writeback later
+  Device : flush acknowledged : fsync returns, data durable
 ```
 
 ## 6. Observing and reasoning about these caches

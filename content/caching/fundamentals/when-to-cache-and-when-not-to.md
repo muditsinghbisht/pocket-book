@@ -26,6 +26,26 @@ There is an old saying, often attributed to Phil Karlton, that there are only tw
 
 Let us enumerate the costs honestly.
 
+```mermaid
+mindmap
+  root((Cost of a cache))
+    Correctness
+      Staleness window
+      Races
+    Complexity
+      More states to test
+    Operations
+      Another system to run
+    Money
+      Memory is expensive
+    Miss latency
+      Pays lookup plus origin
+    Cold start
+      Empty after restart
+    Security
+      Wrong key leaks data
+```
+
 ### 2.1 Correctness cost: staleness and races
 
 A cached value can be older than the source of truth. For how long and with what consequence is the central design question. Even with explicit invalidation, races between readers filling the cache and writers invalidating it can leave stale data indefinitely. The chapters on Invalidation, TTL and consistency explore these in detail. For now: **every cache adds a staleness window**, and you must be able to state its maximum duration and justify why users can live with it.
@@ -76,11 +96,21 @@ h_max = (r - w) / r = 1 - w / r
 
 For a key read 10 times per second and written 5 times per second, h_max = 0.5. For a key written as often as it is read, h_max = 0, and the cache is pure overhead. Counters, "last seen" timestamps, live positions and inventory counts in a busy shop are common examples. For these, either avoid caching or accept a short TTL (bounded staleness) and decouple from per-write invalidation.
 
+```mermaid
+xychart-beta
+  title "Best-case hit ratio 1 - w / r when every write invalidates"
+  x-axis ["w/r 0", "0.2", "0.5", "0.8", "1.0"]
+  y-axis "Hit ratio (%)" 0 --> 100
+  line [100, 80, 50, 20, 0]
+```
+
 ### 3.3 Strict correctness requirements
 
 Some data must be right _now_. Bank balances at the moment of withdrawal, remaining stock at the moment of purchase, authorization decisions after a permission has been revoked. Serving a stale balance to display a dashboard is acceptable. Using a stale balance to approve a payment is not. The pattern: **cache for display, read the source of truth for decision.** The product page may show "3 in stock" from the cache; the checkout transaction must check and decrement the real count in the database atomically.
 
 Revocation is a particularly nasty case. If a permission cache has a five-minute TTL, a fired employee may retain access for up to five minutes. Whether that is tolerable is a security decision, not a performance one.
+
+> **Key idea:** Cache for display, read the source of truth for decisions. The product page may say "3 in stock" from the cache, but checkout must check and decrement the real count.
 
 ### 3.4 Data that is cheap to compute or fetch
 
@@ -95,6 +125,14 @@ A slow query is often slow because of a missing index, an unbounded scan, an N+1
 The most dangerous consequence of success is dependency. Suppose that your database was designed to serve 1,000 queries per second, and the service receives 10,000 requests per second. With a cache hit ratio of 95 percent, database load is 500 per second. Everything works. Over time, traffic grows to 15,000 requests per second, and the load is 750 per second. Still works. Nobody notices that the system can no longer function without the cache; the cache has changed from an optimisation into a load-bearing wall.
 
 Now the cache cluster restarts. Hit ratio goes to zero for a while. Database load is 15,000 per second against a capacity of 1,000, fifteen times too much. The database slows, requests time out, clients retry (doubling the load), the cache cannot refill because the fills time out as well, and the outage continues until a human sheds load or the traffic goes away. The system has a stable "bad" state that it cannot leave on its own, which is the signature of what researchers call metastable failures.
+
+| Situation            | Requests per s | Hit ratio | Database load | Database capacity |
+| -------------------- | -------------- | --------- | ------------- | ----------------- |
+| Healthy              | 10,000         | 95 %      | 500 per s     | 1,000 per s       |
+| After traffic growth | 15,000         | 95 %      | 750 per s     | 1,000 per s       |
+| Cache flushed        | 15,000         | 0 %       | 15,000 per s  | 1,000 per s       |
+
+> **Key idea:** A cache that is working well hides how much the origin depends on it. Test with an empty cache before an outage tests it for you.
 
 The test of your design is therefore: **what happens if the cache is empty or unavailable?** There are acceptable answers: the database can survive at reduced throughput; the service sheds load gracefully; non-essential features are turned off; traffic is admitted gradually. An unacceptable answer is "we have never tried." Chaos tests, in which you deliberately flush the cache in a staging environment under load, are among the best investments a caching team can make.
 
@@ -138,6 +176,15 @@ Suppose you have decided to cache. Where, and what?
 5. **Distributed cache** (Redis, Memcached): shared by all instances, one logical copy per key, a network hop away (about a millisecond).
 6. **Database buffer pool**: automatic, transparent.
 
+```mermaid
+flowchart TD
+  A["Browser: no network cost"] --> B["CDN edge: public content"]
+  B --> C["Gateway or reverse proxy"]
+  C --> D["In-process: microseconds"]
+  D --> E["Distributed cache: about 1 ms"]
+  E --> F["Database buffer pool"]
+```
+
 **Granularity** (what is a cache entry):
 
 - A _row or entity_ is reusable by many views and simple to invalidate by key, but each page assembly needs many lookups.
@@ -163,6 +210,19 @@ Walk through the following questions in order. If you cannot answer one, find ou
 
 If all ten have answers, caching is likely appropriate. If several are weak, consider an alternative from section 5.
 
+```mermaid
+flowchart TD
+  S["Name the problem with a number"] --> O{"Is the origin the bottleneck?"}
+  O -->|no| X1["Fix the query or index first"]
+  O -->|yes| H{"Hit ratio above t_c / t_d?"}
+  H -->|no| X2["Do not cache, or cache only the popular subset"]
+  H -->|yes| F{"Staleness budget acceptable?"}
+  F -->|no| X3["Read the source of truth"]
+  F -->|yes| E{"Origin survives an empty cache?"}
+  E -->|no| X4["Add shedding, warm-up, coalescing"]
+  E -->|yes| G["Cache it and measure"]
+```
+
 ### 7.1 A worked decision
 
 **Case A: product detail pages for an online shop.** Latency target p99 of 150 ms; the database query with several joins takes 60 ms. Traffic: 3,000 requests per second, skewed (the top 5 percent of products receive 70 percent of views). Reads outnumber writes by a ratio of about 1,000 to 1. Price and stock can be up to 30 seconds stale for display, with the checkout path reading the database directly. Break-even is 1 / 60, about 1.7 percent, and expected hit ratio is above 90 percent. _Decision: cache the product entity in a distributed cache with a 30-second TTL plus explicit invalidation on update, coalesced misses, and a plan for cold start._ Amdahl check: if the query is 60 ms of an 80 ms request, p = 0.75, and 90 percent hits give fetch = 1 + 0.1 × 60 = 7 ms, so total = 27 ms and a speedup of 80 / 27 = 2.96.
@@ -172,6 +232,28 @@ If all ten have answers, caching is likely appropriate. If several are weak, con
 **Case C: bank account balance in a mobile app.** Balance is read often but must be exact on the transaction path. _Decision: cache only for the display page with a short TTL and an explicit "as of" timestamp; the transaction path reads the ledger and ignores the cache entirely._ The "as of" timestamp is a good habit: it turns hidden staleness into a visible, honest contract with the user.
 
 **Case D: permissions lookup on every API call.** Hit ratio would be excellent, and the lookup is cheap but frequent (a hot path). However, revocation latency is a security matter. _Decision: cache with a very short TTL, say 30 seconds, plus explicit invalidation events on permission change, plus a documented worst-case revocation delay approved by security._
+
+```mermaid
+quadrantChart
+  title Where each case lands
+  x-axis Rarely changes --> Changes constantly
+  y-axis Little reuse --> Heavy reuse
+  quadrant-1 Short TTL plus events
+  quadrant-2 Cache with TTL
+  quadrant-3 Cache only the popular subset
+  quadrant-4 Do not cache
+  Product pages: [0.1, 0.9]
+  Activity feed: [0.9, 0.15]
+  Account balance: [0.65, 0.6]
+  Permissions: [0.35, 0.85]
+```
+
+| Case               | Decision                           | Deciding factor                     |
+| ------------------ | ---------------------------------- | ----------------------------------- |
+| A, product pages   | Cache, 30 s TTL plus invalidation  | High reuse, tolerable staleness     |
+| B, activity feed   | Do not cache                       | Low reuse, strict freshness         |
+| C, account balance | Display only, with an "as of" time | Transactions need exact data        |
+| D, permissions     | Very short TTL plus events         | Revocation delay is a security call |
 
 ## 8. A guard-rail pattern in code
 
@@ -194,6 +276,21 @@ Product getProduct(long id) {
 ```
 
 Notice the three safeguards: a short timeout for the lookup (a cache lookup slower than 20 ms is worse than going to the origin if the origin takes 60 ms), exception handling that degrades instead of failing, and a best-effort write. In C++ the equivalent is a call with a deadline and `std::optional` as the return type for the "no value" case, with the miss path falling through to the loader.
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Cache
+  participant DB
+  App->>Cache: get product 42, 20 ms timeout
+  alt hit
+    Cache-->>App: value
+  else miss, error or timeout
+    App->>DB: load product 42
+    DB-->>App: row
+    App->>Cache: set with 30 s TTL, best effort
+  end
+```
 
 Notice also what the sketch does _not_ do: it does not protect the database from the extra load when the cache is down. That requires admission control, which we cover under load shedding and backpressure in the Stampede and hot keys chapters.
 

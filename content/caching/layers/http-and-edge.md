@@ -24,6 +24,8 @@ The key insight is that HTTP caches are everywhere, and the origin server contro
 
 Latency order of magnitude (approximate, depends heavily on geography and network): a response served from the browser's own cache costs about a millisecond or less. A response from a nearby CDN edge might cost tens of milliseconds, dominated by network round trips. A response from a distant origin may cost one hundred milliseconds to several hundred, because TCP/TLS setup and long-haul round trips add up (speed-of-light delay alone across a continent is on the order of tens of milliseconds one way). Hence "the fastest request is the one that never leaves the device."
 
+> **Key idea:** The fastest request is the one that never leaves the device. Freshness avoids the request, validation avoids the body, and only a miss pays the full cost.
+
 ## 2. Private versus shared caches
 
 - A **private cache** serves a single user. The browser cache is the main example. It may store responses that contain user-specific data, because only that user can read them.
@@ -59,6 +61,17 @@ Main directives to know:
 | `stale-if-error=N`         | May serve stale for N seconds if the origin errors.                                        |
 
 A frequent confusion: `no-cache` does **not** mean "do not cache". It means "cache, but check first." `no-store` is the directive that means "do not keep a copy".
+
+```mermaid
+flowchart TD
+  R["Request"] --> S{"Stored copy fresh?"}
+  S -->|yes| H["Serve from cache, no network"]
+  S -->|no| V{"Has a validator?"}
+  V -->|yes| C["Conditional request"]
+  C -->|"304"| U["Reuse stored body"]
+  C -->|"200"| N["Store the new body"]
+  V -->|no| F["Full fetch"]
+```
 
 ## 4. Validation: is my copy still good?
 
@@ -96,6 +109,12 @@ A 200 KB JavaScript bundle on a mobile link with 80 ms round trip time and 10 Mb
 
 So validation saves two thirds of the time and nearly all bandwidth, but freshness removes the request entirely. This ordering (fresh hit, then 304, then full fetch) is the basic cost model of HTTP caching.
 
+| Case              | Network round trips     | Time on the 200 KB bundle |
+| ----------------- | ----------------------- | ------------------------- |
+| Cold fetch        | 1, plus 200 KB transfer | about 240 ms              |
+| Revalidation, 304 | 1, headers only         | about 80 ms               |
+| Fresh cache hit   | 0                       | a few ms from disk        |
+
 ### Weak versus strong validators
 
 ETags can be **strong** (byte-for-byte identical) or **weak** (prefixed `W/`, semantically equivalent). Range requests need strong validators. Also, an ETag generated from file inode or modification time may differ across servers in a load-balanced fleet, causing needless cache misses and full fetches; generate ETags from content.
@@ -112,6 +131,14 @@ Now the cache stores one variant per distinct `Accept-Encoding` value (in practi
 
 1. **Forget `Vary` and you serve the wrong thing**: the gzipped body to a client that cannot decode it, or French content to an English reader.
 2. **Over-broad `Vary` destroys hit rate**: `Vary: User-Agent` creates a separate cache entry for each distinct user agent string, of which there are thousands; `Vary: Cookie` means nearly one entry per user. CDNs often let you normalize the key (collapse user agents into "mobile"/"desktop", ignore irrelevant cookies and query parameters) to recover hit rate. Ignoring a parameter that does affect the response is a correctness bug; including tracking parameters (such as `utm_source`) in the key needlessly fragments the cache.
+
+| Vary header     | Variants stored     | Effect on hit rate           |
+| --------------- | ------------------- | ---------------------------- |
+| Accept-Encoding | A handful           | Fine                         |
+| User-Agent      | Thousands           | Cache becomes nearly useless |
+| Cookie          | Nearly one per user | Cache becomes nearly useless |
+
+> **Key idea:** Vary defines the cache key. Leave a dimension out and you serve the wrong content, include too many and the hit rate collapses.
 
 ## 6. Reverse proxies and CDN edges
 
@@ -135,6 +162,13 @@ flowchart LR
 
 An edge-only configuration has 300 PoPs. For a rarely requested object, each PoP may miss independently and go to the origin: up to 300 origin fetches after a purge. With a shield tier that collapses misses, the origin sees about 1 fetch. If the edge hit ratio is 90 percent and the shield hit ratio on the remaining misses is 80 percent, only 0.10 x 0.20 = 2 percent of requests reach the origin. For 10,000 requests per second, that is 200 per second at the origin instead of 1,000. **Request coalescing** (collapsing concurrent misses for the same key into one origin fetch) adds further protection against the stampede problem discussed in a later lesson.
 
+```mermaid
+pie title Where 100 requests end up, 90 percent edge hits and 80 percent shield hits
+  "Edge hit" : 90
+  "Shield hit" : 8
+  "Origin" : 2
+```
+
 ### What belongs at the edge
 
 Static assets (images, scripts, stylesheets, fonts, video segments) are the classic case. Many CDNs also cache API responses and even HTML for anonymous users, and some run code at the edge to assemble responses. The limit is personalization: anything unique per user cannot be shared, unless you split the page into a cached shell plus small per-user fetches.
@@ -147,6 +181,17 @@ Phil Karlton's remark that there are only two hard things in computer science, c
 
 **Versioned (fingerprinted) URLs.** Include a content hash in the file name: `app.3f9a1c.js`. Because the URL changes whenever the content changes, you can serve it with `Cache-Control: public, max-age=31536000, immutable`, a year-long lifetime, and never need to invalidate: the new HTML references the new URL. This "cache busting" is the standard approach for static assets and the single most effective trick in web caching. The HTML document that references the assets must itself be short-lived or revalidated (`no-cache` with an ETag, or a short `max-age`), or users keep an old HTML pointing to old assets (which, if you delete old files too early, produce 404s).
 
+```mermaid
+sequenceDiagram
+  participant Browser
+  participant CDN
+  Browser->>CDN: GET index.html, no-cache with ETag
+  CDN-->>Browser: 200, now references app.9d2e44.js
+  Browser->>CDN: GET app.9d2e44.js, new URL so not stored
+  CDN-->>Browser: 200, max-age 1 year, immutable
+  Note over Browser: old app.3f9a1c.js stays cached but is never requested again
+```
+
 ### Choosing headers: a practical table
 
 | Resource                    | Suggested policy                                                    | Why                                                      |
@@ -158,6 +203,14 @@ Phil Karlton's remark that there are only two hard things in computer science, c
 | Banking page / tokens       | `no-store`                                                          | Do not leave copies on disk or in proxies.               |
 
 Remember that these are starting points; the right staleness bound is a business decision.
+
+```mermaid
+flowchart TD
+  Q1{"Personalized response?"} -->|yes| P["private, no-cache or no-store"]
+  Q1 -->|no| Q2{"URL changes with content?"}
+  Q2 -->|yes| I["public, max-age 1 year, immutable"]
+  Q2 -->|no| S["Short s-maxage plus stale-while-revalidate"]
+```
 
 ## 8. Other client-side storage and service workers
 

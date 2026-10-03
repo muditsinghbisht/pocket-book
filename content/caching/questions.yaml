@@ -190,3 +190,36 @@ questions:
               int get(int key) { return values[key]; }
               void remove(int key) { values[key] = -1; }
           };
+
+  - id: what-and-why-read-path-01
+    level: beginner
+    type: mcq
+    q: >-
+      An application asks the cache for a key and gets nothing back. It reads
+      the value from the database. What should it do next?
+    options:
+      - Return the value and leave the cache empty
+      - Delete the key from the database
+      - Store the value in the cache, then return it
+      - Retry the cache until the key appears
+    answer: 2
+    explain: >-
+      On a miss the application fetches from the source of truth, sets the
+      value in the cache so the next lookup hits, and returns it.
+
+  - id: what-and-why-expiry-01
+    level: intermediate
+    type: mcq
+    q: >-
+      A cache entry is still stored but its TTL has elapsed. A request for
+      that key arrives. How is it counted?
+    options:
+      - As a hit, because the entry is present
+      - As a miss, because an expired entry is not acceptable to return
+      - As an eviction
+      - As neither, because expired entries are ignored in metrics
+    answer: 1
+    explain: >-
+      A hit is a lookup whose data is found and acceptable to return. An
+      expired entry is not, so the request goes to the origin and the entry is
+      refilled.
