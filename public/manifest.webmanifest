@@ -1,6 +1,6 @@
 {
-  "name": "Study Assistant",
-  "short_name": "Study",
+  "name": "PocketBook",
+  "short_name": "PocketBook",
   "description": "A book-style guide to software engineering.",
   "start_url": "./",
   "scope": "./",

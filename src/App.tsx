@@ -138,8 +138,8 @@ export default function App() {
 
   useEffect(() => {
     document.title = node
-      ? `${route.section ? labels[route.section][0] + ": " : ""}${node.title} | Study Assistant`
-      : "Study Assistant";
+      ? `${route.section ? labels[route.section][0] + ": " : ""}${node.title} | PocketBook`
+      : "PocketBook";
     window.scrollTo(0, 0);
   }, [route, node]);
 
@@ -179,7 +179,7 @@ export default function App() {
             className="flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg px-1.5 font-semibold tracking-tight focus-visible:outline-2"
           >
             <Logo />
-            <span className="truncate">Study Assistant</span>
+            <span className="truncate">PocketBook</span>
           </a>
           <nav
             aria-label="Domains"
@@ -214,7 +214,7 @@ export default function App() {
             className="mb-2 flex min-h-11 items-center gap-2.5 px-2 font-semibold"
           >
             <Logo />
-            Study Assistant
+            PocketBook
           </a>
           <Tree nodes={domains} active={route.path} />
         </nav>

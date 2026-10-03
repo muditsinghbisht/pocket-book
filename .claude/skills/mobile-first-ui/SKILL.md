@@ -1,6 +1,6 @@
 ---
 name: mobile-first-ui
-description: Use when building or changing any Study Assistant UI (layout, navigation, flashcards, quizzes, hints and solutions, notes, diagrams, tables, print styles). Enforces mobile-first, touch-friendly, responsive behavior.
+description: Use when building or changing any PocketBook UI (layout, navigation, flashcards, quizzes, hints and solutions, notes, diagrams, tables, print styles). Enforces mobile-first, touch-friendly, responsive behavior.
 ---
 
 # Mobile-first UI

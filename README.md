@@ -1,4 +1,4 @@
-# Study Assistant
+# PocketBook
 
 A client-only, book-style web app for learning software engineering. Topics are nested, and every topic can have lessons, case studies, practice questions, quizzes, flashcards, a cheat-sheet and your own notes.
 
@@ -44,3 +44,7 @@ Phase 1 in progress: scaffold done (Vite, React, TypeScript, Tailwind, Vitest). 
 Phase 2 in progress: the app item is done (installable PWA, offline via a build-generated service worker, update prompt). The LLM and agentic-systems content has not started.
 
 See `.claude/requirements.md` for full requirements and decisions.
+
+## License
+
+Code is released under the [MIT License](LICENSE). The curated content in `content/` is released under [CC BY 4.0](LICENSE-CONTENT.md). Third-party material linked from the content belongs to its owners.

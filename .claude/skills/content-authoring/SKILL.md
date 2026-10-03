@@ -1,6 +1,6 @@
 ---
 name: content-authoring
-description: Use when writing or editing curated content for the Study Assistant (lessons, practice questions, quizzes, flashcards, cheat-sheets) or the YAML/MDX build pipeline that validates it. Enforces local Markdown/MDX and YAML as the only content source.
+description: Use when writing or editing curated content for PocketBook (lessons, practice questions, quizzes, flashcards, cheat-sheets) or the YAML/MDX build pipeline that validates it. Enforces local Markdown/MDX and YAML as the only content source.
 ---
 
 # Content authoring

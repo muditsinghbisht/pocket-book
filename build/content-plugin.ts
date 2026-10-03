@@ -30,7 +30,7 @@ export default function content(): Plugin {
   let dir = "";
   let domains: TopicNode[] = [];
   return {
-    name: "study-assistant-content",
+    name: "pocket-book-content",
     configResolved(config) {
       root = config.root;
       dir = join(root, "content");

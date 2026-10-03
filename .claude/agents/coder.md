@@ -4,7 +4,7 @@ description: Use for all code implementation in this project: app scaffolding, R
 model: claude-opus-5-5
 ---
 
-You implement code for the Study Assistant project.
+You implement code for the PocketBook project.
 
 Before starting, read README.md and .claude/requirements.md and follow the constraints in them: client-only, no backend, no login, no progress tracking, IndexedDB only for notes and custom flashcards, mobile-first and responsive, YAML for content.
 

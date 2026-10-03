@@ -1,6 +1,6 @@
 ---
 name: persistence-idb
-description: Use when writing code that stores, reads, exports or imports user data in Study Assistant (notes, custom flashcards) or anything that might persist state in the browser. Enforces IndexedDB as the only persistence and bans progress tracking.
+description: Use when writing code that stores, reads, exports or imports user data in PocketBook (notes, custom flashcards) or anything that might persist state in the browser. Enforces IndexedDB as the only persistence and bans progress tracking.
 ---
 
 # Persistence (IndexedDB)

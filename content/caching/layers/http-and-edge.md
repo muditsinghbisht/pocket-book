@@ -161,7 +161,7 @@ Remember that these are starting points; the right staleness bound is a business
 
 ## 8. Other client-side storage and service workers
 
-Beyond the HTTP cache, browsers expose programmable storage: the Cache API (used by service workers), IndexedDB, `localStorage` and in-memory JavaScript variables. A **service worker** can intercept requests and implement strategies such as cache-first, network-first and stale-while-revalidate with full control. This is how offline-capable web apps work; the Study Assistant project defers this to its second phase. The programmable layer is powerful but shifts invalidation responsibility to you: a buggy service worker can serve stale assets for a long time, and updating it requires care.
+Beyond the HTTP cache, browsers expose programmable storage: the Cache API (used by service workers), IndexedDB, `localStorage` and in-memory JavaScript variables. A **service worker** can intercept requests and implement strategies such as cache-first, network-first and stale-while-revalidate with full control. This is how offline-capable web apps work; the PocketBook project defers this to its second phase. The programmable layer is powerful but shifts invalidation responsibility to you: a buggy service worker can serve stale assets for a long time, and updating it requires care.
 
 ## 9. HTTP caching in your API client
 

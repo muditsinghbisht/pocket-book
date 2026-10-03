@@ -1,4 +1,4 @@
-# Study Assistant
+# PocketBook
 
 Client-only, book-style web app for learning software engineering. Full details are imported below and are the source of truth.
 

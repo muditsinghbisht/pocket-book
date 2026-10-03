@@ -1,6 +1,6 @@
 ---
 name: case-study-sources
-description: Use when writing case studies or outages, or adding any external link, paper, blog, talk or YouTube source to Study Assistant content. Enforces the case study template and the rule that only verified links are included.
+description: Use when writing case studies or outages, or adding any external link, paper, blog, talk or YouTube source to PocketBook content. Enforces the case study template and the rule that only verified links are included.
 ---
 
 # Case studies and sources

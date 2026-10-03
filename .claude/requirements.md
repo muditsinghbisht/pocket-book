@@ -1,4 +1,4 @@
-# Study Assistant: Requirements and Decisions
+# PocketBook: Requirements and Decisions
 
 Reference document for future sessions and agents. Keep in sync with README.md.
 
