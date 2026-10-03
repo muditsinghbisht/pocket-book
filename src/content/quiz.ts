@@ -31,3 +31,23 @@ export function deriveQuiz(
   (Array.isArray(scope) ? scope : [scope]).forEach(walk);
   return shuffle(out, random);
 }
+
+/**
+ * Grades a typed numeric answer: correct when |input - answer| <= tolerance
+ * (default 0, plus a tiny epsilon for float noise). Accepts thousands
+ * separators and a trailing unit ("1,000", "90%", "6 ms"). Returns undefined
+ * when the input is not a number.
+ */
+export function gradeNumeric(
+  input: string,
+  q: { answer: number; tolerance?: number; unit?: string },
+): boolean | undefined {
+  let s = input.trim();
+  if (q.unit && s.toLowerCase().endsWith(q.unit.toLowerCase()))
+    s = s.slice(0, -q.unit.length);
+  s = s.replace(/[\s,_]/g, "");
+  const x = s ? Number(s) : NaN;
+  if (!Number.isFinite(x)) return undefined;
+  const eps = 1e-9 * Math.max(1, Math.abs(q.answer));
+  return Math.abs(x - q.answer) <= (q.tolerance ?? 0) + eps;
+}

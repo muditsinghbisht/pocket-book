@@ -1,14 +1,9 @@
-// Node and section views. Interactive quiz, flashcard and notes features come in later milestones.
+// Node and section views. The quiz player lives in Quiz.tsx; flashcard and notes features come in later milestones.
 import type { CSSProperties, ReactNode } from "react";
-import {
-  isQuizQuestion,
-  levels,
-  type Level,
-  type Section,
-} from "./content/model.ts";
-import { deriveQuiz } from "./content/quiz.ts";
+import { isQuizQuestion, type Level, type Section } from "./content/model.ts";
 import type { PracticeQuestion, TopicNode } from "./content/schema.ts";
 import { Mdx } from "./Mdx.tsx";
+import { Quiz } from "./Quiz.tsx";
 import { notFoundArt } from "./not-found-art.ts";
 import { link } from "./route.ts";
 
@@ -440,38 +435,7 @@ export function SectionView({
       return (
         <>
           {title}
-          <p className="mb-4 text-muted">
-            Quiz player comes in a later milestone. Questions available here and
-            in subtopics:
-          </p>
-          <ul className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {levels.map((l) => (
-              <li
-                key={l}
-                style={tone(l)}
-                className="card border-t-4 border-t-tone p-3"
-              >
-                <span className="text-sm font-semibold text-tone capitalize">
-                  {l}
-                </span>
-                <span className="block text-2xl font-semibold tabular-nums">
-                  {deriveQuiz(node, l).length}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {node.quizzes.length > 0 && (
-            <ul className="space-y-2">
-              {node.quizzes.map((z) => (
-                <li key={z.id} className={row}>
-                  <span>{z.title}</span>
-                  <span className="text-sm whitespace-nowrap text-muted">
-                    {z.questions.length} questions
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
+          <Quiz key={node.path} node={node} />
         </>
       );
     case "flashcards":

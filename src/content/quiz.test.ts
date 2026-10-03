@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { deriveQuiz, shuffle } from "./quiz.ts";
+import { deriveQuiz, gradeNumeric, shuffle } from "./quiz.ts";
 import type { Level } from "./model.ts";
 import type { Question, TopicNode } from "./schema.ts";
 
@@ -91,4 +91,21 @@ test("order differs between runs", () => {
     ),
   );
   expect(runs.size).toBeGreaterThan(1);
+});
+
+test("gradeNumeric: exact, tolerance, units, separators and bad input", () => {
+  const pct = { answer: 90, unit: "%" };
+  expect(gradeNumeric("90", pct)).toBe(true);
+  expect(gradeNumeric(" 90 % ", pct)).toBe(true);
+  expect(gradeNumeric("89.9", pct)).toBe(false);
+  const ms = { answer: 6, tolerance: 0.05, unit: "ms" };
+  expect(gradeNumeric("6.05", ms)).toBe(true);
+  expect(gradeNumeric("5.95 MS", ms)).toBe(true);
+  expect(gradeNumeric("6.06", ms)).toBe(false);
+  expect(gradeNumeric("0.3", { answer: 0.1 + 0.2 })).toBe(true);
+  expect(gradeNumeric("1,000", { answer: 1000 })).toBe(true);
+  expect(gradeNumeric("-2", { answer: -2 })).toBe(true);
+  expect(gradeNumeric("", pct)).toBeUndefined();
+  expect(gradeNumeric("ninety", pct)).toBeUndefined();
+  expect(gradeNumeric("%", pct)).toBeUndefined();
 });
