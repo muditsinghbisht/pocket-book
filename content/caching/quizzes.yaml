@@ -43,3 +43,38 @@ quizzes:
       - flash-sale-ttl-01
       - cache-feedback-loop-01
       - cache-consistency-proof-01
+
+  - id: caching-eviction-workout
+    title: Eviction workout
+    questions:
+      - eviction-lru-vs-scan-01
+      - eviction-lru-trace-02
+      - eviction-belady-min-01
+      - eviction-lfu-trace-01
+      - eviction-reuse-distance-01
+      - eviction-countmin-estimate-01
+      - eviction-arc-ghost-01
+      - eviction-sampled-lru-01
+      - eviction-arc-p-update-01
+      - eviction-wtinylfu-window-01
+      - eviction-opt-trace-01
+      - eviction-lru-concurrency-01
+
+  - id: caching-stampede-and-distribution
+    title: Stampedes, sharding and the edge
+    questions:
+      - stampede-defn-01
+      - stampede-jitter-02
+      - stampede-herd-02
+      - stampede-lock-01
+      - stampede-xfetch-01
+      - stampede-hotkey-01
+      - distributed-caches-slots-01
+      - distributed-caches-modn-01
+      - distributed-caches-redirect-01
+      - distributed-caches-rolling-01
+      - cdn-nocache-01
+      - cdn-age-01
+      - cdn-vary-01
+      - cdn-byte-offload-01
+      - cdn-purge-shield-01
