@@ -43,7 +43,7 @@ Implemented (navigation milestone) in `src/route.ts`, the only routing module:
 - Every link is relative (`#...` within a domain, `../<domain>/#...` across domains, `./<domain>/` from home) and Vite uses `base: "./"`, so the build works under any subpath.
 - `parseHash`, `toHash` and `href` are pure and unit tested; `useRoute` subscribes to `hashchange`.
 
-Shell: persistent sidebar tree at `md` and up; below `md`, a native `<dialog>` drawer (focus trap and Escape for free, closes on backdrop or link tap) and a fixed bottom navigation for the seven sections. The tree expands only the active node's ancestors. Lessons, case studies, practice (hints, explanation and solutions behind tap-to-reveal `<details>`), quizzes (the quiz player, see "Quizzes"), flashcards and notes are implemented; the cheat-sheet view is still a stub.
+Shell: persistent sidebar tree at `md` and up; below `md`, a native `<dialog>` drawer (focus trap and Escape for free, closes on backdrop or link tap) and a fixed bottom navigation for the seven sections. The tree expands only the active node's ancestors. Lessons, case studies, practice (hints, explanation and solutions behind tap-to-reveal `<details>`), quizzes (the quiz player, see "Quizzes"), flashcards, notes and the cheat-sheet are implemented.
 
 ## Responsive and mobile
 
@@ -104,6 +104,8 @@ Sources include papers, blogs, talks and YouTube. Only include links confirmed t
 ### Cheat-sheets
 
 One per topic. Printable.
+
+Implemented in the `cheatsheet` case of `src/views.tsx`. Items are rendered by `src/inlineMarkdown.tsx`, a tiny pure renderer (no dependency, no `dangerouslySetInnerHTML`) for `**bold**`, `*italic*`, `` `code` `` and `[text](https://...)` (https only); anything unmatched stays literal. A "Print cheat-sheet" button calls `window.print()`; in print the shell chrome and the button are hidden, the node title stays as the page heading, and sections flow in two compact columns without splitting across columns or pages, always in the light theme.
 
 ## YAML authoring format (sketch)
 
